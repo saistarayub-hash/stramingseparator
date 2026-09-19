@@ -1,0 +1,433 @@
+import 'dotenv/config';
+import express from 'express';
+import multer from 'multer';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  probe, fixVideo, measureLoudness, detectHighlights, cutClip, ffmpegPath, ffprobePath,
+} from './ffmpeg.js';
+import { videos, jobs, publishes, getSettings, saveSettings, uid, hasSupabase } from './store.js';
+import * as yt from './youtube.js';
+import * as autopilot from './autopilot.js';
+import { emit } from './pubsub.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.join(__dirname, '..');
+const PUBLIC_DIR = path.join(ROOT, 'public');
+const DATA_DIR = path.join(ROOT, 'data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const OUTPUT_DIR = path.join(DATA_DIR, 'outputs');
+
+for (const d of [DATA_DIR, UPLOADS_DIR, OUTPUT_DIR, PUBLIC_DIR]) {
+  fs.mkdirSync(d, { recursive: true });
+}
+
+const app = express();
+app.use(express.json({ limit: '2mb' }));
+app.use(express.static(PUBLIC_DIR));
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || '');
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 * 1024 }, // up to 20GB (disk permitting)
+});
+
+// ------------------------------------------------------------------- helpers
+const sc = (res, fn) =>
+  fn.then((d) => res.json(d)).catch((e) => {
+    console.error(e);
+    res.status(400).json({ error: e.message });
+  });
+
+function safeVid(v) {
+  if (!v) return null;
+  const { diskPath, ...rest } = v;
+  return rest;
+}
+
+// ------------------------------------------------------------------- status
+app.get('/api/status', (_req, res) => res.json({ ok: true, supabase: hasSupabase() }));
+
+// ------------------------------------------------------------------- videos
+app.get('/api/videos', (_req, res) => sc(res, videos.list().then((l) => l.map(safeVid))));
+
+app.post('/api/videos/upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
+    const filePath = req.file.path;
+    const id = uid();
+    const v = await videos.set(id, {
+      name: req.file.originalname,
+      diskPath: filePath,
+      originalSize: req.file.size,
+      stage: 'uploaded',
+      createdAt: new Date().toISOString(),
+    });
+    // Screenshot a thumbnail from the start for the UI
+    const thumbPath = path.join(OUTPUT_DIR, `${id}.jpg`);
+    fs.writeFileSync(path.join(OUTPUT_DIR, `${id}.thumb.log`), '');
+    emit('video', { id, name: v.name, stage: 'uploaded' });
+    res.json(safeVid(v));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/videos/:id', (req, res) => sc(res, videos.get(req.params.id).then(safeVid)));
+app.delete('/api/videos/:id', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (v?.diskPath) try { fs.unlinkSync(v.diskPath); } catch {}
+  await videos.remove(req.params.id);
+  res.json({ ok: true });
+});
+
+// ------------------------------------------------------------------- analysis / fix
+app.post('/api/videos/:id/analyze', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  try {
+    await videos.set(v.id, { stage: 'analyzing' });
+    emit('video', { id: v.id, stage: 'analyzing' });
+    const p = await probe(v.diskPath);
+    const loud = v.hasAudio === false ? null : await measureLoudness(v.diskPath).catch(() => null);
+    const shots = await detectHighlights(v.diskPath).catch(() => []);
+    const analyzed = {
+      stage: 'analyzed',
+      info: {
+        duration: p.duration,
+        width: p.width,
+        height: p.height,
+        fps: p.fps,
+        videoCodec: p.videoCodec,
+        audioCodec: p.audioCodec,
+        audioChannels: p.audioChannels,
+        hasAudio: p.hasAudio,
+        bitrate: p.bitrate,
+        sizeBytes: p.sizeBytes,
+        loudness: loud,
+        normalizes: loud && Math.abs((loud.integratedLufs ?? -14) + 14) > 1.5,
+      },
+      highlights: shots.slice(0, 50),
+      issues: buildIssues(p, loud),
+    };
+    await videos.set(v.id, analyzed);
+    emit('video', { id: v.id, stage: 'analyzed' });
+    res.json(safeVid(await videos.get(v.id)));
+  } catch (e) {
+    await videos.set(v.id, { stage: 'error', error: e.message });
+    emit('video', { id: v.id, stage: 'error', error: e.message });
+    res.status(400).json({ error: e.message });
+  }
+});
+
+function buildIssues(p, loud) {
+  const issues = [];
+  if (!p.hasVideo) issues.push({ type: 'error', text: 'No video stream detected.' });
+  if (!p.hasAudio) issues.push({ type: 'warn', text: 'No audio stream — the clip will be silent.' });
+  if (p.height < 360) issues.push({ type: 'warn', text: `Very low resolution (${p.width}×${p.height}).` });
+  if (loud && loud.integratedLufs != null && Math.abs(loud.integratedLufs + 14) > 3) {
+    issues.push({ type: 'info', text: `Audio is ${loud.integratedLufs.toFixed(1)} LUFS — will be normalized to -14 LUFS.` });
+  }
+  if (!issues.length) issues.push({ type: 'ok', text: 'Looks good! Ready to fix & tidy.' });
+  return issues;
+}
+
+// ------------------------------------------------------------------- processing jobs
+app.post('/api/videos/:id/fix', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  const opts = { maxHeight: Number(req.body?.maxHeight) || 1080, maxDuration: req.body?.maxDuration || null };
+  const jobId = uid();
+  const outPath = path.join(OUTPUT_DIR, `${v.id}-fixed.mp4`);
+
+  await jobs.set(jobId, { id: jobId, kind: 'fix', videoId: v.id, status: 'running', createdAt: new Date().toISOString() });
+  await videos.set(v.id, { stage: 'fixing', fixJobId: jobId });
+  emit('video', { id: v.id, stage: 'fixing' });
+  res.json({ jobId });
+
+  runAsync(async () => {
+    try {
+      const result = await fixVideo(v.diskPath, outPath, opts, (prog) => emit('job', { jobId, ...prog }));
+      const p = await probe(outPath);
+      await videos.set(v.id, {
+        stage: 'fixed',
+        fixedPath: outPath,
+        fixedInfo: { duration: p.duration, width: p.width, height: p.height, sizeBytes: p.sizeBytes },
+      });
+      await jobs.set(jobId, { status: 'done' });
+      emit('job', { jobId, status: 'done' });
+      emit('video', { id: v.id, stage: 'fixed' });
+    } catch (e) {
+      await jobs.set(jobId, { status: 'error', error: e.message });
+      await videos.set(v.id, { stage: 'error', error: e.message });
+      emit('job', { jobId, status: 'error', error: e.message });
+      emit('video', { id: v.id, stage: 'error', error: e.message });
+    }
+  });
+});
+
+app.post('/api/videos/:id/clips', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  const src = v.fixedPath || v.diskPath;
+  const moments = Array.isArray(req.body?.moments) && req.body.moments.length
+    ? req.body.moments
+    : (v.highlights || []).slice(0, 3).map((h) => ({ at: h.at, duration: 30 }));
+
+  const jobId = uid();
+  await jobs.set(jobId, { id: jobId, kind: 'clips', videoId: v.id, status: 'running', createdAt: new Date().toISOString() });
+  await videos.set(v.id, { stage: 'clipping', clipJobId: jobId });
+  emit('video', { id: v.id, stage: 'clipping' });
+  res.json({ jobId, count: moments.length });
+
+  runAsync(async () => {
+    try {
+      const clips = [];
+      for (let i = 0; i < moments.length; i++) {
+        const m = moments[i];
+        const clipId = `${v.id}-clip-${i}`;
+        const clipPath = path.join(OUTPUT_DIR, `${clipId}.mp4`);
+        const start = Math.max(0, Number(m.at || 0) - 0.5);
+        const duration = Math.min(60, Number(m.duration) || 30);
+        await cutClip(src, clipPath, { start, duration, vertical: m.vertical !== false }, (prog) =>
+          emit('job', { jobId, clip: i, ...prog }));
+        const p = await probe(clipPath);
+        clips.push({ id: clipId, start, duration, width: p.width, height: p.height, sizeBytes: p.sizeBytes });
+      }
+      await videos.set(v.id, { stage: 'clipped', clips });
+      await jobs.set(jobId, { status: 'done', clips });
+      emit('job', { jobId, status: 'done' });
+      emit('video', { id: v.id, stage: 'clipped', count: clips.length });
+    } catch (e) {
+      await jobs.set(jobId, { status: 'error', error: e.message });
+      await videos.set(v.id, { stage: 'error', error: e.message });
+      emit('job', { jobId, status: 'error', error: e.message });
+      emit('video', { id: v.id, stage: 'error', error: e.message });
+    }
+  });
+});
+
+// ------------------------------------------------------------------- files (download / serve)
+app.get('/api/videos/:id/file', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  const filePath = req.query.kind === 'original' ? v.diskPath : (v.fixedPath || v.diskPath);
+  if (!filePath || !fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found. Run Fix first.' });
+  sendFileWithName(res, filePath);
+});
+
+app.get('/api/videos/:id/clips/:clipIdx/file', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  const clipPath = path.join(OUTPUT_DIR, `${v.id}-clip-${req.params.clipIdx}.mp4`);
+  if (!fs.existsSync(clipPath)) return res.status(404).json({ error: 'Clip not found' });
+  sendFileWithName(res, clipPath);
+});
+
+function sendFileWithName(res, filePath) {
+  const ext = path.extname(filePath);
+  const mt = {
+    '.mp4': 'video/mp4', '.mkv': 'video/x-matroska', '.mov': 'video/quicktime',
+    '.webm': 'video/webm', '.jpg': 'image/jpeg', '.png': 'image/png',
+  }[ext] || 'application/octet-stream';
+  res.setHeader('Content-Type', mt);
+  res.sendFile(filePath);
+}
+
+// Thumbnail: first frame of the (original/fixed) video as JPEG, cached.
+app.get('/api/videos/:id/thumb', async (req, res) => {
+  try {
+    const v = await videos.get(req.params.id);
+    if (!v) return res.status(404).json({ error: 'Video not found' });
+    const src = v.fixedPath || v.diskPath;
+    const thumb = path.join(OUTPUT_DIR, `${v.id}.jpg`);
+    if (!fs.existsSync(thumb)) {
+      const { runBin } = await import('./ffmpeg.js');
+      const { ffmpegPath: ffp } = await import('./ffmpeg.js');
+      await runBin(ffp, ['-y', '-ss', '2', '-i', src, '-frames:v', '1', '-vf', 'scale=320:-2', '-q:v', '3', thumb]);
+    }
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.sendFile(thumb);
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+// ------------------------------------------------------------------- publishing
+app.post('/api/publish', async (req, res) => {
+  try {
+    const { videoId, title, description, tags, privacy, clips, tiktokTitle } = req.body;
+    const v = await videos.get(videoId);
+    if (!v) return res.status(404).json({ error: 'Video not found' });
+
+    const results = [];
+    const pubId = uid();
+    await publishes.set(pubId, { status: 'running', videoId, at: new Date().toISOString(), results: [] });
+
+    // YouTube long-form
+    if (req.body.youtube) {
+      const filePath = v.fixedPath || v.diskPath;
+      if (!fs.existsSync(filePath)) throw new Error('Processed file missing — run Fix first.');
+      results.push({ platform: 'youtube', kind: 'long', status: 'uploading' });
+      emit('publish', { pubId, platform: 'youtube', status: 'uploading' });
+      try {
+        const up = await yt.uploadVideo({
+          filePath,
+          title: title || v.name,
+          description: description || '',
+          tags: (tags || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20),
+          privacy: privacy || 'private',
+        });
+        results[results.length - 1] = { platform: 'youtube', kind: 'long', status: 'done', url: up.url, id: up.id };
+        emit('publish', { pubId, platform: 'youtube', status: 'done', url: up.url });
+      } catch (e) {
+        results[results.length - 1] = { platform: 'youtube', kind: 'long', status: 'error', error: e.message };
+        emit('publish', { pubId, platform: 'youtube', status: 'error', error: e.message });
+      }
+    }
+
+    // TikTok clips
+    if (req.body.tiktok && Array.isArray(clips) && clips.length) {
+      for (const clipId of clips) {
+        results.push({ platform: 'tiktok', kind: 'clip', clipId, status: 'queued' });
+      }
+      results.push({
+        platform: 'tiktok', kind: 'clip', clipId: clips.join(','), status: 'error',
+        error: 'TikTok upload needs the official TikTok API (Content Posting API is by-application). Use the TikTok app for now — clips are ready in your Files tab. (Coming: auto-post via your phone pairing.)',
+      });
+    }
+
+    await publishes.set(pubId, { status: 'done', results });
+    emit('publish', { pubId, status: 'done', results });
+    res.json({ pubId, results });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/publishes', (_req, res) => sc(res, publishes.list()));
+
+// ------------------------------------------------------------------- YouTube auth
+app.get('/api/youtube/status', async (_req, res) => {
+  try {
+    const hasToken = !!(await yt.getToken());
+    let channel = null;
+    if (hasToken) channel = await yt.whoami().catch(() => null);
+    res.json({ connected: hasToken && !!channel, channel });
+  } catch (e) {
+    res.json({ connected: false, error: e.message });
+  }
+});
+
+app.get('/api/youtube/auth-url', (_req, res) => res.json({ url: yt.authUrl() }));
+
+app.get('/auth/youtube/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error) return res.redirect('/?youtube=denied&reason=' + encodeURIComponent(error));
+  try {
+    await yt.exchangeCode(code);
+    res.redirect('/?youtube=connected');
+  } catch (e) {
+    res.redirect('/?youtube=error&reason=' + encodeURIComponent(e.message));
+  }
+});
+
+// ------------------------------------------------------------------- autopilot (live)
+app.get('/api/autopilot/status', (_req, res) => res.json(autopilot.status()));
+app.post('/api/autopilot/start', async (req, res) => {
+  try {
+    await autopilot.start({ youtubeVideoId: req.body.youtubeVideoId, tiktokUser: req.body.tiktokUser });
+    res.json({ ok: true, status: autopilot.status() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/autopilot/stop', (_req, res) => {
+  autopilot.stop();
+  res.json({ ok: true, status: autopilot.status() });
+});
+// Manual reply (you speak as the bot)
+app.post('/api/autopilot/say', async (req, res) => {
+  const { platform, text } = req.body;
+  try {
+    if (platform === 'youtube') {
+      const st = autopilot.status();
+      if (!st.youtube?.liveChatId) throw new Error('YouTube chat not connected.');
+      await yt.postLiveChat(st.youtube.liveChatId, text);
+    } else if (platform === 'tiktok') {
+      // fall back to overlay in UI if not deliverable
+      emit('reply', { at: Date.now(), platform: 'tiktok', user: 'You', in: '(manual)', out: text, sent: false, manual: true });
+      return res.json({ ok: true, delivered: false, note: 'TikTok send not available; shown as your manual reply.' });
+    } else throw new Error('Unknown platform');
+    emit('reply', { at: Date.now(), platform, user: 'You', in: '(manual)', out: text, sent: true, manual: true });
+    res.json({ ok: true, delivered: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ------------------------------------------------------------------- settings
+app.get('/api/settings', (_req, res) => sc(res, getSettings().then((s) => {
+  const { youtubeToken, ...safe } = s;
+  return { ...safe, youtubeToken: !!youtubeToken };
+})));
+app.post('/api/settings', async (req, res) => {
+  const { youtubeToken, ...rest } = req.body || {};
+  await saveSettings(rest);
+  res.json({ ok: true });
+});
+
+// ------------------------------------------------------------------- SSE
+import { hub } from './pubsub.js';
+
+app.get('/api/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(`data: ${JSON.stringify({ type: 'hello' })}\n\n`);
+
+  const events = ['video', 'job', 'chat', 'reply', 'log', 'publish', 'viewers'];
+  const handlers = {};
+  for (const ev of events) {
+    handlers[ev] = (payload) => {
+      try { res.write(`data: ${JSON.stringify({ type: ev, data: JSON.parse(payload) })}\n\n`); } catch {}
+    };
+  }
+  for (const [ev, h] of Object.entries(handlers)) hub.on(ev, h);
+
+  const ping = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => {
+    clearInterval(ping);
+    for (const [ev, h] of Object.entries(handlers)) hub.off(ev, h);
+  });
+});
+
+// ------------------------------------------------------------------- async runner
+function runAsync(fn) {
+  fn().catch((e) => console.error('async job failed:', e));
+}
+
+// ------------------------------------------------------------------- boot
+const PORT = Number(process.env.PORT) || 8787;
+app.listen(PORT, '0.0.0.0', () => {
+  console.log('');
+  console.log('  ┌──────────────────────────────────────────────────────┐');
+  console.log('  │   🎮 StreamPilot — your cross-platform autopilot      │');
+  console.log('  └──────────────────────────────────────────────────────┘');
+  console.log(`  Dashboard:  http://localhost:${PORT}`);
+  console.log(`  FFmpeg:     ${ffmpegPath}`);
+  console.log(`  FFprobe:    ${ffprobePath}`);
+  console.log(`  Supabase:   ${hasSupabase() ? 'connected ✅' : 'not configured (using local data/)'}`);
+  console.log('');
+});

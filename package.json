@@ -1,0 +1,24 @@
+{
+  "name": "stramingseparator",
+  "version": "0.1.0",
+  "description": "Auto-pilot for gaming creators: upload gameplay, fix/prep it, and publish to every platform — with a live-chat autopilot.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^1.4.1",
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "multer": "^2.4.0",
+    "tiktok-live-connector": "^2.5.0"
+  }
+}
