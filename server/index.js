@@ -9,7 +9,7 @@ import {
   probe, fixVideo, measureLoudness, detectHighlights, cutClip, ffmpegPath, ffprobePath,
 } from './ffmpeg.js';
 import {
-  videos, jobs, publishes, getSettings, saveSettings, uid, hasSupabase,
+  videos, jobs, publishes, getSettings, saveSettings, uid,
   initStore, reinitStore, usingCloud, mirrorToCloud,
   saveAppwriteCreds, readAppwriteCredsFile,
 } from './store.js';
@@ -63,7 +63,6 @@ function safeVid(v) {
 // ------------------------------------------------------------------- status
 app.get('/api/status', (_req, res) => res.json({
   ok: true,
-  supabase: hasSupabase(),
   cloud: usingCloud() ? 'appwrite' : 'local',
   appwriteConfigured: isConfigured(),
 }));
@@ -293,6 +292,13 @@ app.post('/api/publish', async (req, res) => {
     const v = await videos.get(videoId);
     if (!v) return res.status(404).json({ error: 'Video not found' });
 
+    // Auto-fill marketing copy when the user didn't write any.
+    const { generateCopy } = await import('./copybrain.js');
+    const auto = await generateCopy({ kind: v.source === 'live' || v.source === 'auto' ? 'clip' : 'vod', customTitle: title || v.copy?.title || undefined });
+    const finalTitle = title || v.copy?.title || auto.title;
+    const finalDesc = description || v.copy?.description || auto.description;
+    const finalTags = (tags || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20);
+
     const results = [];
     const pubId = uid();
     await publishes.set(pubId, { status: 'running', videoId, at: new Date().toISOString(), results: [] });
@@ -306,9 +312,9 @@ app.post('/api/publish', async (req, res) => {
       try {
         const up = await yt.uploadVideo({
           filePath,
-          title: title || v.name,
-          description: description || '',
-          tags: (tags || '').split(',').map((t) => t.trim()).filter(Boolean).slice(0, 20),
+          title: finalTitle,
+          description: finalDesc,
+          tags: finalTags.length ? finalTags : (v.copy?.tags || []),
           privacy: privacy || 'private',
         });
         results[results.length - 1] = { platform: 'youtube', kind: 'long', status: 'done', url: up.url, id: up.id };
@@ -332,7 +338,7 @@ app.post('/api/publish', async (req, res) => {
 
     await publishes.set(pubId, { status: 'done', results });
     emit('publish', { pubId, status: 'done', results });
-    res.json({ pubId, results });
+    res.json({ pubId, results, autoCopy: { title: finalTitle, description: finalDesc, tags: finalTags.length ? finalTags : v.copy?.tags || [] } });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -400,6 +406,52 @@ app.post('/api/liveclip/cut', async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
+});
+
+// Auto-edit: cut + transcribe + captions + title + copy — one call.
+app.post('/api/liveclip/auto', async (req, res) => {
+  try {
+    const vod = await liveclip.autoBuildClip(req.body || {});
+    res.json({ ok: true, video: vod });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Generate copy for any video (titles/descriptions/hashtags).
+app.post('/api/copy/generate', async (req, res) => {
+  try {
+    const { generateCopy } = await import('./copybrain.js');
+    const out = await generateCopy(req.body || {});
+    res.json(out);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Transcribe an existing video (background job).
+app.post('/api/videos/:id/transcribe', async (req, res) => {
+  const v = await videos.get(req.params.id);
+  if (!v) return res.status(404).json({ error: 'Video not found' });
+  const src = v.fixedPath || v.diskPath;
+  const jobId = uid();
+  await jobs.set(jobId, { id: jobId, kind: 'captions', videoId: v.id, status: 'running', createdAt: new Date().toISOString() });
+  emit('job', { jobId, status: 'running', kind: 'captions' });
+  res.json({ jobId });
+  runAsync(async () => {
+    try {
+      const { generateCaptions } = await import('./captions.js');
+      const result = await generateCaptions(src, { model: req.body?.model || 'small', language: req.body?.language || null });
+      if (result.error) throw new Error(result.error);
+      await videos.set(v.id, { captions: result.captions, language: result.language });
+      await jobs.set(jobId, { status: 'done', captions: result.captions.length });
+      emit('job', { jobId, status: 'done', captions: result.captions.length });
+      emit('video', { id: v.id, stage: v.stage, captions: result.captions.length });
+    } catch (e) {
+      await jobs.set(jobId, { status: 'error', error: e.message });
+      emit('job', { jobId, status: 'error', error: e.message });
+    }
+  });
 });
 
 app.get('/api/liveclip/segments', (_req, res) => {
@@ -545,7 +597,7 @@ app.get('/api/events', (req, res) => {
   });
   res.write(`data: ${JSON.stringify({ type: 'hello' })}\n\n`);
 
-  const events = ['video', 'job', 'chat', 'reply', 'log', 'publish', 'viewers', 'liveclip'];
+  const events = ['video', 'job', 'chat', 'reply', 'log', 'publish', 'viewers', 'liveclip', 'autoclip'];
   const handlers = {};
   for (const ev of events) {
     handlers[ev] = (payload) => {

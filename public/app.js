@@ -192,10 +192,14 @@ function renderDetail(v) {
   actBox.innerHTML = `
     ${canFix ? `<button class="btn btn-primary" id="btn-fix">🎛 Fix & master for broadcast</button>` : ''}
     ${canClip ? `<button class="btn" id="btn-clips" ${h.length ? '' : 'style="opacity:.6"'}>✂️ Auto-clip best moments (${h.length || 0} found)</button>` : ''}
+    ${canClip ? `<button class="btn" id="btn-transcribe">🎙️ Auto-captions</button>` : ''}
+    <button class="btn" id="btn-copy">📝 Write title + tags</button>
     <a class="btn btn-ghost" href="/api/videos/${v.id}/file" download>⬇ Download video</a>
   `;
   $('#btn-fix')?.addEventListener('click', () => runFix(v.id));
   $('#btn-clips')?.addEventListener('click', () => runClips(v.id));
+  $('#btn-transcribe')?.addEventListener('click', () => runTranscribe(v.id));
+  $('#btn-copy')?.addEventListener('click', () => runCopy(v.id));
 
   // highlights
   const hlWrap = $('#highlights');
@@ -211,6 +215,35 @@ function renderDetail(v) {
     }));
   } else {
     hlWrap.innerHTML = '<div class="h3">🎯 Action moments appear here after analysis.</div>';
+  }
+
+  // captions
+  const capBox = $('#captions-box');
+  if (capBox) {
+    const caps = v.captions || [];
+    capBox.style.display = caps.length ? 'block' : 'none';
+    if (caps.length) {
+      capBox.innerHTML = '<div class="h3">💬 Burned-in captions (' + caps.length + ')</div>' + caps.slice(0, 10).map((c) =>
+        `<div class="issue issue-info" style="cursor:pointer" data-t="${c.start}"><b>${fmt.time(c.start)}–${fmt.time(c.end)}</b> · ${esc(c.text)}</div>`).join('')
+        + (caps.length > 10 ? `<div class="hint">…and ${caps.length - 10} more</div>` : '');
+      capBox.querySelectorAll('[data-t]').forEach((el) => el.addEventListener('click', () => {
+        $('#video-preview').currentTime = parseFloat(el.dataset.t);
+        $('#video-preview').play();
+      }));
+    }
+  }
+
+  // auto-generated copy
+  const copyBox = $('#copy-box');
+  if (copyBox) {
+    const c = v.copy || {};
+    copyBox.style.display = c.title || c.description ? 'block' : 'none';
+    if (c.title || c.description) {
+      copyBox.innerHTML = '<div class="h3">📝 Auto-written copy</div>'
+        + (c.title ? `<div class="issue issue-ok"><b>Title:</b> ${esc(c.title)}</div>` : '')
+        + (c.description ? `<div class="issue issue-info" style="white-space:pre-wrap"><b>Description:</b><br/>${esc(c.description)}</div>` : '')
+        + (c.hashtags ? `<div class="issue issue-warn"><b>Hashtags:</b> ${esc(c.hashtags)}</div>` : '');
+    }
   }
 
   // clips made
@@ -235,6 +268,13 @@ async function deleteVideo(id) {
   if (state.activeVideoId === id) closeDetail();
   refreshVideos();
   toast('Removed.');
+}
+
+/** Re-render the open detail panel from the latest list (after background jobs). */
+function reopenActive() {
+  if (!state.activeVideoId) return;
+  const v = state.videos.find((x) => x.id === state.activeVideoId);
+  if (v) renderDetail(v);
 }
 
 function closeDetail() {
@@ -313,6 +353,33 @@ async function runClips(id) {
   }
 }
 
+async function runTranscribe(id) {
+  setBusy($('#btn-transcribe'), true, 'Transcribing…');
+  toast('Whisper is listening… (first run downloads a model)');
+  try {
+    await api.post(`/api/videos/${id}/transcribe`, { model: 'small' });
+    // result arrives via SSE 'job' + 'video' events
+  } catch (e) {
+    toast('Transcription failed: ' + e.message, 'error');
+  } finally {
+    setBusy($('#btn-transcribe'), false);
+  }
+}
+
+async function runCopy(id) {
+  setBusy($('#btn-copy'), true, 'Writing…');
+  try {
+    const c = await api.post('/api/copy/generate', { kind: 'clip' });
+    toast('Copy generated: ' + c.title);
+    const v = state.videos.find((x) => x.id === id);
+    if (v) { v.copy = c; renderDetail(v); }
+  } catch (e) {
+    toast('Copy generation failed: ' + e.message, 'error');
+  } finally {
+    setBusy($('#btn-copy'), false);
+  }
+}
+
 /* ------------------------------------------------------------------ SSE progress */
 function connectEvents() {
   const es = new EventSource('/api/events');
@@ -324,7 +391,7 @@ function connectEvents() {
     if (msg.type === 'video') {
       if (state.activeVideoId === d.id) {
         if (d.stage) $('#detail-stage').textContent = stageLabel(d.stage);
-        if (d.stage === 'fixed' || d.stage === 'clipped') {
+        if (d.stage === 'fixed' || d.stage === 'clipped' || d.captions != null) {
           refreshVideos().then(() => {
             const v = state.videos.find((x) => x.id === d.id);
             if (v && state.activeVideoId === d.id) renderDetail(v);
@@ -334,12 +401,17 @@ function connectEvents() {
       refreshVideos();
     }
     if (msg.type === 'job') {
-      if (d.status === 'done') toast('✅ Job finished.');
-      if (d.status === 'error') toast('❌ ' + (d.error || 'Job failed'), 'error');
-      if (d.progress === 'end' || d.status === 'done' || d.status === 'error') {
-        setBar(1);
-      } else if (d.out_time_ms && d.durationTarget) {
-        setBar(parseInt(d.out_time_ms, 10) / 1000 / d.durationTarget);
+      if (d.kind === 'captions') {
+        if (d.status === 'done') { toast(`🎙️ ${d.captions || 0} captions ready`); refreshVideos().then(reopenActive); }
+        if (d.status === 'error') toast('❌ Captions failed: ' + (d.error || ''), 'error');
+      } else {
+        if (d.status === 'done') toast('✅ Job finished.');
+        if (d.status === 'error') toast('❌ ' + (d.error || 'Job failed'), 'error');
+        if (d.progress === 'end' || d.status === 'done' || d.status === 'error') {
+          setBar(1);
+        } else if (d.out_time_ms && d.durationTarget) {
+          setBar(parseInt(d.out_time_ms, 10) / 1000 / d.durationTarget);
+        }
       }
     }
     if (msg.type === 'chat') pushChat(d);
@@ -347,6 +419,7 @@ function connectEvents() {
     if (msg.type === 'log') pushLog(d);
     if (msg.type === 'publish') renderPublishProgress(d);
     if (msg.type === 'liveclip') onLiveClipEvent(d);
+    if (msg.type === 'autoclip') onAutoClip(d);
   };
   es.onerror = () => { /* browser auto-reconnects */ };
 }
@@ -488,6 +561,33 @@ $('#live-cut-btn')?.addEventListener('click', async () => {
   }
 });
 
+// Auto-edit: cut + auto-captions + title + description + hashtags
+$('#live-auto-btn')?.addEventListener('click', async () => {
+  setBusy($('#live-auto-btn'), true, 'Auto-editing…');
+  try {
+    const offset = liveClipState.offset;
+    const duration = parseInt($('#live-clip-dur').value, 10);
+    const title = $('#live-clip-title').value.trim();
+    const vertical = $('#live-clip-vertical').checked;
+    const captions = $('#live-clip-caption').checked;
+    const r = await api.post('/api/liveclip/auto', { offset, duration, title: title || null, vertical, captions });
+    const v = r.video;
+    liveClipState.cuts.unshift({ at: Date.now(), offset, duration, name: v?.name });
+    liveLog(`✨ Auto-edit done → "${v?.name}"${v.captions?.length ? ` with ${v.captions.length} captions` : ''}`, 'feed-info');
+    liveLog(`📝 Title: ${v?.copy?.title || ''}`, 'feed-info');
+    liveLog(`🏷️ ${v?.copy?.hashtags || ''}`, 'feed-info');
+    renderCutHistory();
+    toast('Auto-edit saved to Library ✨');
+    refreshVideos();
+    if (v && state.videos.some((x) => x.id === v.id)) openDetail(v);
+  } catch (e) {
+    liveLog('⚠️ ' + e.message, 'feed-error');
+    toast('Auto-edit failed: ' + e.message, 'error');
+  } finally {
+    setBusy($('#live-auto-btn'), false);
+  }
+});
+
 function renderCutHistory() {
   const box = $('#live-cut-history');
   if (!box) return;
@@ -524,9 +624,25 @@ function onLiveClipEvent(d) {
     refreshVideos();
   }
   if (d.type === 'ps5') liveLog('PS5: ' + esc(d.state || JSON.stringify(d)), 'feed-info');
+  if (d.type === 'auto') {
+    const steps = { cut: '✂️ Cutting moment…', transcribe: '🎙️ Transcribing audio (local Whisper)…', captions: '💬 Applying captions…', render: '🎬 Rendering clip…', done: '✅ Auto-edit done' };
+    liveLog(steps[d.step] || esc(d.step), 'feed-info');
+    if (d.step === 'done') {
+      liveLog(`📝 ${d.copy?.title || ''}`, 'feed-info');
+      liveLog(`🏷️ ${d.copy?.hashtags || ''}`, 'feed-info');
+      refreshVideos();
+    }
+  }
   if (d.type === 'render') {
     if (d.progress === 'end') liveLog('Render done ✓', 'feed-info');
   }
+}
+
+// chat-triggered auto clip completion (SSE autoclip)
+function onAutoClip(d) {
+  if (!d) return;
+  if (d.error) { liveLog('⚠️ Auto-clip failed: ' + esc(d.error), 'feed-error'); toast('Auto-clip failed: ' + d.error, 'error'); }
+  else { liveLog(`🎬 Auto-clip (requested by @${esc(d.from || 'chat')}) → "${esc(d.name)}"`, 'feed-info'); toast('Auto-clip ready! 🎬'); refreshVideos(); }
 }
 
 /* ------------------------------------------------------------------ autopilot */

@@ -1,7 +1,6 @@
 // Storage facade: Appwrite (cloud) when configured, else local JSON.
 // The rest of the app talks to this module only.
 
-import { createClient } from '@supabase/supabase-js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,17 +43,6 @@ export async function reinitStore() {
   await aw.reloadCreds();
   return initStore();
 }
-
-// ---------------------------------------------------------------- supabase
-let supabase = null;
-export function getSupabase() {
-  if (supabase) return supabase;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_ANON_KEY;
-  if (url && key) supabase = createClient(url, key);
-  return supabase;
-}
-export const hasSupabase = () => !!getSupabase();
 
 // ---------------------------------------------------------------- local store
 function ensureDir() {

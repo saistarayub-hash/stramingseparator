@@ -115,6 +115,27 @@ clip buffer — so you can cut TikTok clips while streaming from your phone.
 > keep the recording machine wired — clipping is instant either way, but clean local playback
 > gives a smoother buffer.
 
+### 7. Auto-edit + auto-copy ✨
+Every clip/VOD can now be **fully auto-produced** — no manual writing:
+
+- **✂️ Auto-clip from chat:** with Live Autopilot running, anyone typing `!clip` (or
+  `!clip 30s THAT PLAY`) in YouTube/TikTok chat triggers an automatic cut of the last moment.
+- **✨ Auto-edit:** the clip is cut, **auto-captioned** (local Whisper), a title lower-third is
+  burned in, and it's rendered vertical 9:16 — all automatic.
+- **📝 Auto-copy:** every clip/VOD gets a **title, description and hashtags** auto-written from
+  your game + stream context (extend it in Settings). Publishing auto-fills them when you don't
+  type your own.
+
+#### Auto-captions setup (free + private, runs on your machine)
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install faster-whisper
+# then in Settings or .env:  SP_WHISPER_MODEL=small   (tiny|base|small|medium|large-v3)
+```
+First transcription downloads the model once (~500 MB for `small`) to `~/.cache`, then it's
+cached. No data leaves your machine. If Whisper isn't installed, StreamPilot still works —
+captions are simply skipped and the clip is cut without them.
+
 ---
 
 ## Configuration

@@ -77,6 +77,8 @@
         <div class="actions-row" id="detail-actions"></div>
 
         <div id="highlights"></div>
+        <div id="captions-box" style="display:none"></div>
+        <div id="copy-box" style="display:none"></div>
         <div id="clips-made" style="display:none"></div>
       </div>
     </section>
@@ -139,9 +141,13 @@
           </div>
         </div>
         <div class="row" style="margin-bottom:12px">
-          <label class="checkbox-row"><input type="checkbox" id="live-clip-caption" /> Burn-in captions (auto — needs caption source)</label>
+          <label class="checkbox-row"><input type="checkbox" id="live-clip-caption" checked /> Auto-captions (local Whisper)</label>
           <label class="checkbox-row"><input type="checkbox" id="live-clip-vertical" checked /> Vertical (9:16)</label>
           <button class="btn btn-primary" id="live-cut-btn">✂️ Cut the last moment</button>
+          <button class="btn" id="live-auto-btn" style="background:linear-gradient(135deg,#22d3ee,#8b5cf6); border:none; color:white;">✨ Auto-edit it</button>
+        </div>
+        <div class="ghost-note" style="margin-bottom:12px">
+          💬 <b>Chat trigger:</b> turn on Live Autopilot and anyone typing <b>!clip</b> (or <b>!clip 30s THAT PLAY</b>) auto-cuts, auto-captions and auto-writes the title + description + hashtags — with no touching.
         </div>
         <div class="live-console" id="live-console">Ready. Start a recording to begin clipping.</div>
         <div id="live-cut-history"></div>

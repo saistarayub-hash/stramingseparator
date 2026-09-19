@@ -6,6 +6,7 @@ import * as yt from './youtube.js';
 import * as tt from './tiktok.js';
 import { decide } from './brain.js';
 import { emit, hub } from './pubsub.js';
+import * as liveclip from './liveclip.js';
 
 let youtubeTimer = null;
 let youtubeState = null; // { liveChatId, pageToken, videoId, pollingIntervalMs }
@@ -122,6 +123,23 @@ async function onTikTokMessage(msg) {
 
 async function handleInbound(msg) {
   emit('chat', msg);
+
+  // Auto-clip trigger: !clip anywhere in chat → cut from live buffer.
+  const s0 = await getSettings().catch(() => ({}));
+  if (s0.autoClipEnabled !== false) {
+    const handled = liveclip.handleAutoClipChat(msg);
+    if (handled.clipped) {
+      emit('log', { level: 'info', msg: `✂️ Auto-clip requested by @${msg.author} — cutting now…` });
+      // still send the confirmation reply from the brain
+      const decision = await decide(msg).catch(() => null);
+      if (decision?.reply) {
+        if (msg.platform === 'youtube' && youtubeState?.liveChatId) {
+          yt.postLiveChat(youtubeState.liveChatId, decision.reply).catch(() => {});
+        }
+      }
+      return;
+    }
+  }
 
   let decision = null;
   try {

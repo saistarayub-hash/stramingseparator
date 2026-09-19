@@ -19,6 +19,8 @@ import { spawn } from 'node:child_process';
 import { uid, videos } from './store.js';
 import { renderClip, probe } from './ffmpeg.js';
 import { emit } from './pubsub.js';
+import { generateCaptions, captionsForWindow } from './captions.js';
+import { generateCopy } from './copybrain.js';
 
 const require = createRequire(import.meta.url);
 const { fetchYouTubeLiveHls } = require('./live/youtube-source.cjs');
@@ -328,9 +330,126 @@ async function buildWindow(dir, outPath, start, end) {
   await runSpawn(ffbin(), args);
   try { rmSync(listPath); } catch {}
 }
+
+// ------------------------------------------------------------------ auto-edit
+/** Guard so we never run two auto-builds at once. */
+let autoBuilding = false;
+
 /**
- * Ask the PS5 companion to launch capture + relay, returning a local HLS URL
- * that can be fed to startRecorder(). Requires the setup in scripts/ps5.sh.
+ * Auto-edit a moment: cut the last `offset` seconds, transcribe (local Whisper),
+ * burn captions + title, and generate title/description/hashtags.
+ * @returns the saved video record with copy + captions attached.
+ */
+export async function autoBuildClip({
+  offset = 25, duration = 20, title = null, label = null, vertical = true,
+  captions = true, model = 'small',
+} = {}) {
+  if (!current) throw new Error('No live recording active.');
+  if (autoBuilding) throw new Error('An auto-edit is already running — one moment.');
+  autoBuilding = true;
+  try {
+    await ensureBufferReady();
+
+    const end = clamp(current.lastDone - 2, 2, current.lastDone);
+    const start = Math.max(0, end - Number(offset));
+    const dur = clamp(Number(duration) || 20, 2, 60);
+
+    // 1) window from the rolling buffer
+    const windowPath = path.join(current.dir, 'window.ts');
+    await buildWindow(current.dir, windowPath, start, end);
+    emit('liveclip', { type: 'auto', step: 'cut', offset, duration: dur });
+
+    // 2) transcribe (free, local) — if audio exists and captions wanted
+    let captionList = [];
+    let transcriptionError = null;
+    if (captions) {
+      emit('liveclip', { type: 'auto', step: 'transcribe' });
+      try {
+        const tr = await generateCaptions(windowPath, { model });
+        if (tr.error) throw new Error(tr.error);
+        captionList = captionsForWindow(tr.captions, 0, dur);
+        emit('liveclip', { type: 'auto', step: 'captions', count: captionList.length });
+      } catch (e) {
+        transcriptionError = e.message;
+        emit('log', { level: 'warn', msg: 'Auto-captions unavailable: ' + e.message });
+      }
+    }
+
+    // 3) render with title + captions burned in
+    emit('liveclip', { type: 'auto', step: 'render' });
+    const clipId = uid();
+    const outPath = path.join(CLIP_DIR, `${clipId}.mp4`);
+    await renderClip(windowPath, outPath, { start: 0, duration: dur, vertical, title, captions: captionList }, (p) =>
+      emit('liveclip', { type: 'render', clipId, ...p }));
+
+    const p = await probe(outPath);
+
+    // 4) generate the marketing copy
+    const copy = await generateCopy({ kind: 'clip', customTitle: title || undefined, titleSeed: label || title || undefined, extra: 'Auto-captioned & cut by StreamPilot ✂️' });
+
+    const vodName = (label || title || 'Auto clip');
+    const vod = await videos.set(clipId, {
+      name: vodName,
+      diskPath: outPath,
+      fixedPath: outPath,
+      stage: 'clipped',
+      source: 'auto',
+      liveOffset: start,
+      liveDuration: dur,
+      info: { duration: p.duration, width: p.width, height: p.height, hasAudio: p.hasAudio, loudness: null },
+      clips: [], highlights: [],
+      issues: [
+        { type: 'ok', text: 'Cut automatically from live stream.' },
+        ...(captionList.length ? [{ type: 'ok', text: `${captionList.length} captions burned in.` }] : []),
+        ...(transcriptionError ? [{ type: 'warn', text: 'Captions skipped: ' + transcriptionError }] : []),
+      ],
+      copy,
+      captions: captionList,
+      createdAt: new Date().toISOString(),
+    });
+
+    // 5) mirror to cloud (when Appwrite is active) — via store
+    try {
+      const { mirrorToCloud } = await import('./store.js');
+      const m = await mirrorToCloud({ videoId: clipId, filePath: outPath, name: vodName + '.mp4' });
+      if (m) vod.viewUrl = m.viewUrl;
+    } catch { /* cloud optional */ }
+
+    current.processed = (current.processed || 0) + 1;
+    emit('liveclip', { type: 'auto', step: 'done', videoId: clipId, name: vodName, duration: p.duration, copy, captions: captionList.length });
+    emitStatus();
+    try { rmSync(windowPath); } catch {}
+    return vod;
+  } finally {
+    autoBuilding = false;
+  }
+}
+
+/** Chat-triggered builds: accepts the user's message, returns true if handled. */
+export function handleAutoClipChat(message) {
+  const text = String(message?.text || '').toLowerCase();
+  if (text.startsWith('!clip') || text === 'clip that' || text === 'clip it') {
+    // optional duration/label: "!clip 30s WAS THAT A HACK"
+    const durMatch = text.match(/(\d{2})s/);
+    const duration = durMatch ? clamp(parseInt(durMatch[1], 10), 5, 60) : 25;
+    const labelMatch = text.match(/!clip\s+\d*s?\s+(.+)/);
+    const label = labelMatch ? labelMatch[1].trim().slice(0, 40) : null;
+    const offset = duration + 5;
+
+    autoBuildClip({ offset, duration, title: label }).then((vod) => {
+      emit('autoclip', { from: message?.author, videoId: vod.id, name: vod.name, copy: vod.copy });
+    }).catch((e) => {
+      emit('log', { level: 'error', msg: 'Auto-clip failed: ' + e.message });
+      emit('autoclip', { from: message?.author, error: e.message });
+    });
+    return { clipped: true, requestedBy: message?.author };
+  }
+  return { clipped: false };
+}
+
+/**
+ * PS5 companion: launch capture + relay, returning an HLS URL for the recorder.
+ * Requires the setup in scripts/ps5.sh.
  */
 export async function startPs5({ accountId, pin = '0000000', nick = 'StreamPilot', httpPort = 8080 }) {
   if (!accountId) throw new Error('PS5 account-id is required (from npso webfront, see README).');
