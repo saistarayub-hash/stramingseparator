@@ -83,6 +83,18 @@ export function appwrite() {
 export const publicRead = (...extra) => [Permission.read(Role.any()), ...extra];
 
 /* ------------------------------------------------------------------ helpers */
+async function ensureDatabase() {
+  const d = appwrite().databases;
+  const dbId = appwrite().dbId;
+  try {
+    await d.get(dbId);
+    return false;
+  } catch {
+    await d.create(dbId, dbId, true); // databaseId, name, enabled
+    return true;
+  }
+}
+
 async function ensureCollection(name, createDocument) {
   const d = appwrite().databases;
   const dbId = appwrite().dbId;
@@ -138,6 +150,8 @@ export async function bootstrap() {
   const created = [];
   const db = appwrite().databases;
   const dbId = appwrite().dbId;
+
+  if (await ensureDatabase()) created.push('database:' + dbId);
 
   if (await ensureCollection(VIDEOS_COLLECTION, async (d, id, c) => {
     await attrStrings(d, id, c, [
