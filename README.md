@@ -9,6 +9,9 @@ gameplay, drop it in, and it:
 4. **Publishes** the long video to **YouTube** (OAuth, resumable upload) from one button
 5. **Runs your live chat** on **YouTube Live + TikTok Live** simultaneously — greeting fans,
    answering FAQs, and reacting to `!clip` — all automatic, with a manual override.
+6. **Clips your live stream into Shorts/TikToks mid-game** — record a live source (YouTube Live,
+   HLS, or your **PS5 via remote play — no capture card**) into a rolling buffer, then hit one
+   button to turn the last 10–60 seconds into a titled, vertical clip.
 
 > Built free-tier-first: **FFmpeg** (open source), **YouTube Data API** (free 10k quota/day),
 > **TikTokLive** (community live-chat reader), and optional **Supabase** for cloud auth/storage.
@@ -61,6 +64,31 @@ Start it with a **YouTube video/live ID** and/or a **TikTok @username**. It:
   socials, `!clip`, plus your custom FAQs (Settings)
 - replies on both platforms; you can also send manual replies as the bot
 
+### 6. Live Clips (Shorts/TikTok mid-stream) ✂️
+The **Live Clips** tab records a live source into a rolling ~30s buffer and lets you cut the
+moment *as it happens* — no waiting for the VOD, no re-encoding of the whole stream.
+
+- **Pick a source:** a stream URL / YouTube live id, or your **PS5**.
+- While you play, hit **"✂️ Cut the last moment"** → choose how far back (5–30s) and a title →
+  it renders a **vertical 9:16 clip** straight into your Library, ready to publish.
+
+**Clipping straight off the PS5 (no capture card):**
+1. On your PS5: *Settings → System → Remote Play → Enable Remote Play* (note the Account-ID on
+   the *Link Device* screen).
+2. Install the open-source remote-play client **chiaki-ng** (`apt install chiaki` may be
+   chiaki original; the -ng fork supports PS5 pairing best): https://sr.ht/~thestr4ng3r/chiaki/
+3. One-time pair: `./scripts/ps5.sh pair <ACCOUNT_ID>` (a PIN shows on your PS5).
+4. In StreamPilot → Live Clips → pick **PlayStation 5** → paste your Account-ID → Start recording.
+   `scripts/ps5.sh` auto-discovers the console over your LAN, remote-plays the screen, and relays
+   it to a local HLS stream we clip from.
+
+> **YouTube Live source:** paste the live video id (it resolves the HLS manifest via
+> `server/live/youtube-source.cjs`, no API key). Must run on a network that can reach YouTube.
+
+> **Best results:** put StreamPilot (and the PS5 relay) on the same LAN as your console/PC and
+> keep the recording machine wired — clipping is instant either way, but clean local playback
+> gives a smoother buffer.
+
 ---
 
 ## Configuration
@@ -105,17 +133,21 @@ the connector surfaces it transparently.)
 ```
 server/
   index.js      Express app + REST API + SSE event stream
-  ffmpeg.js     FFmpeg/FFprobe wrappers: probe, fix, loudness, highlights, clip
+  ffmpeg.js     FFmpeg/FFprobe wrappers: probe, fix, loudness, highlights, clip, render
   youtube.js    YouTube OAuth + resumable uploads + live chat polling
   tiktok.js     TikTok Live connector wrapper (community lib)
   brain.js      Reply brain: intents, FAQs, templated replies
   autopilot.js  Orchestrates both platforms + brain + sending replies
+  liveclip.js   Live recorder (rolling buffer) + clip/cut engine + PS5 orchestration
+  live/         youtube-source.cjs — resolve a YouTube live id → HLS manifest
   store.js      Local JSON store (auto) or Supabase (when configured)
   pubsub.js     In-memory pub/sub → browser via Server-Sent Events
 public/
   index.html    Dashboard shell
   app.js        Front-end controller (vanilla JS, no build step)
   style.css     Dark gamer theme
+scripts/
+  ps5.sh        PS5 discovery + remote-play pairing + HLS relay (chiaki-ng)
 ```
 
 ---

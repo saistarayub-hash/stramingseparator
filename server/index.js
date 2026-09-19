@@ -11,6 +11,7 @@ import {
 import { videos, jobs, publishes, getSettings, saveSettings, uid, hasSupabase } from './store.js';
 import * as yt from './youtube.js';
 import * as autopilot from './autopilot.js';
+import * as liveclip from './liveclip.js';
 import { emit } from './pubsub.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -315,6 +316,52 @@ app.post('/api/publish', async (req, res) => {
 
 app.get('/api/publishes', (_req, res) => sc(res, publishes.list()));
 
+// ------------------------------------------------------------------- live clip
+app.get('/api/liveclip/status', (_req, res) => res.json(liveclip.status()));
+
+app.post('/api/liveclip/record', async (req, res) => {
+  try {
+    const st = await liveclip.startRecorder(req.body?.url);
+    res.json({ ok: true, status: st });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/liveclip/record/ps5', async (req, res) => {
+  try {
+    const hls = await liveclip.startPs5(req.body || {});
+    const st = await liveclip.startRecorder(hls);
+    res.json({ ok: true, hls, status: st });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/liveclip/stop', (_req, res) => {
+  liveclip.stopRecorder();
+  res.json({ ok: true });
+});
+
+app.post('/api/liveclip/cut', async (req, res) => {
+  try {
+    const vod = await liveclip.cutLiveClip(req.body || {});
+    res.json({ ok: true, video: vod });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/api/liveclip/segments', (_req, res) => {
+  // quick debug view of the current buffer
+  res.json({ status: liveclip.status() });
+});
+
+app.use('/data/clips', (req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+}, express.static(liveclip.CLIP_DIR));
+
 // ------------------------------------------------------------------- YouTube auth
 app.get('/api/youtube/status', async (_req, res) => {
   try {
@@ -397,7 +444,7 @@ app.get('/api/events', (req, res) => {
   });
   res.write(`data: ${JSON.stringify({ type: 'hello' })}\n\n`);
 
-  const events = ['video', 'job', 'chat', 'reply', 'log', 'publish', 'viewers'];
+  const events = ['video', 'job', 'chat', 'reply', 'log', 'publish', 'viewers', 'liveclip'];
   const handlers = {};
   for (const ev of events) {
     handlers[ev] = (payload) => {

@@ -57,13 +57,14 @@ const api = {
 };
 
 /* ------------------------------------------------------------------ views */
-const views = ['library', 'autopilot', 'publish', 'settings'];
+const views = ['library', 'liveclips', 'autopilot', 'publish', 'settings'];
 function showView(name) {
   views.forEach((v) => {
     $('#view-' + v)?.classList.toggle('active', v === name);
     $(`.nav-item[data-view="${v}"]`)?.classList.toggle('active', v === name);
   });
   if (name === 'library') refreshVideos();
+  if (name === 'liveclips') refreshLiveClip();
   if (name === 'autopilot') refreshAutopilot();
   if (name === 'publish') refreshPublish();
   if (name === 'settings') refreshSettings();
@@ -345,6 +346,7 @@ function connectEvents() {
     if (msg.type === 'reply') pushReply(d);
     if (msg.type === 'log') pushLog(d);
     if (msg.type === 'publish') renderPublishProgress(d);
+    if (msg.type === 'liveclip') onLiveClipEvent(d);
   };
   es.onerror = () => { /* browser auto-reconnects */ };
 }
@@ -354,6 +356,149 @@ function setBar(frac) {
   const wrap = $('#progress-wrap');
   if (frac >= 1) { bar.style.width = '100%'; setTimeout(() => { wrap.style.display = 'none'; bar.style.width = '0%'; }, 800); }
   else { wrap.style.display = 'block'; bar.style.width = Math.round(frac * 100) + '%'; }
+}
+
+/* ------------------------------------------------------------------ live clips */
+const liveClipState = { status: null, source: 'url', offset: 25, cuts: [] };
+
+function liveLog(msg, cls = '') {
+  const c = $('#live-console');
+  if (!c) return;
+  const line = document.createElement('div');
+  line.className = cls;
+  line.innerHTML = `<span class="feed-time">${fmt.clock(Date.now())}</span> ${esc(msg)}`;
+  c.appendChild(line);
+  c.scrollTop = c.scrollHeight;
+}
+
+async function refreshLiveClip() {
+  try {
+    liveClipState.status = await api.get('/api/liveclip/status');
+    if (liveClipState.status && !liveClipState.status.running) liveClipState.status = null;
+  } catch { liveClipState.status = null; }
+  renderLiveClip();
+}
+
+function renderLiveClip() {
+  const st = liveClipState.status;
+  const btn = $('#live-record-btn');
+  if (st && st.running) {
+    btn.textContent = '■ Stop recording';
+    btn.classList.remove('btn-primary');
+    btn.classList.add('btn-danger');
+    $('#live-hint').style.display = 'block';
+    $('#live-hint').textContent = `● Recording (${st.source || 'live'}) — buffer keeps the last ~30s. Clips made: ${st.processed || 0}`;
+  } else {
+    btn.textContent = '● Start recording';
+    btn.classList.add('btn-primary');
+    btn.classList.remove('btn-danger');
+    $('#live-hint').style.display = 'none';
+  }
+  // source switch UI
+  $$('input[name="livesrc"]').forEach((r) => r.addEventListener('change', () => {
+    liveClipState.source = r.value;
+    $('#live-url-field').style.display = r.value === 'url' ? 'flex' : 'none';
+    $('#live-ps5-field').style.display = r.value === 'ps5' ? 'flex' : 'none';
+  }));
+}
+
+$('#live-record-btn')?.addEventListener('click', async () => {
+  const st = liveClipState.status;
+  if (st && st.running) {
+    await api.post('/api/liveclip/stop');
+    liveClipState.status = null;
+    liveLog('Recording stopped.');
+    renderLiveClip();
+    return;
+  }
+  setBusy($('#live-record-btn'), true, 'Connecting…');
+  try {
+    if (liveClipState.source === 'ps5') {
+      const acc = $('#live-ps5-acc').value.trim();
+      if (!acc) { toast('Enter your PS5 Account-ID.', 'error'); return; }
+      liveLog('Launching PS5 remote play relay…');
+      const r = await api.post('/api/liveclip/record/ps5', { accountId: acc });
+      liveClipState.status = r.status;
+      liveLog('PS5 relay ready at ' + r.hls + ' — recording.');
+    } else {
+      const url = $('#live-url').value.trim();
+      if (!url) { toast('Enter a stream URL or YouTube id.', 'error'); return; }
+      liveLog('Connecting to source…');
+      const r = await api.post('/api/liveclip/record', { url });
+      liveClipState.status = r.status;
+      liveLog('Recording live.');
+    }
+    toast('Recording started ✅');
+    renderLiveClip();
+  } catch (e) {
+    liveLog('⚠️ ' + e.message, 'feed-error');
+    toast('Could not start: ' + e.message, 'error');
+  } finally {
+    setBusy($('#live-record-btn'), false);
+  }
+});
+
+$('#live-cut-btn')?.addEventListener('click', async () => {
+  setBusy($('#live-cut-btn'), true, 'Cutting…');
+  try {
+    const offset = liveClipState.offset;
+    const duration = parseInt($('#live-clip-dur').value, 10);
+    const title = $('#live-clip-title').value.trim();
+    const vertical = $('#live-clip-vertical').checked;
+    const r = await api.post('/api/liveclip/cut', { offset, duration, title: title || null, vertical });
+    liveClipState.cuts.unshift({ at: Date.now(), offset, duration, name: r.video?.name });
+    liveClipState.cuts = liveClipState.cuts.slice(0, 20);
+    liveLog(`✅ Clip cut (${offset}s back, ${duration}s) → "${r.video?.name}". It's in your Library!`, 'feed-info');
+    renderCutHistory();
+    toast('Clip saved to Library 🎬');
+    refreshVideos();
+  } catch (e) {
+    liveLog('⚠️ ' + e.message, 'feed-error');
+    toast('Cut failed: ' + e.message, 'error');
+  } finally {
+    setBusy($('#live-cut-btn'), false);
+  }
+});
+
+function renderCutHistory() {
+  const box = $('#live-cut-history');
+  if (!box) return;
+  if (!liveClipState.cuts.length) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="h3">🗂️ This session\'s clips</div>' + liveClipState.cuts.slice(0, 12).map((c) => `
+    <span class="live-marker"><span class="t">${c.offset}s</span> ${fmt.clock(c.at)} · ${esc(c.name)}</span>`).join('');
+}
+
+// offset chips
+function bindOffsetChips() {
+  $$('#live-timeline .map-chip[data-offset]').forEach((chip) => chip.addEventListener('click', () => {
+    $$('#live-timeline .map-chip').forEach((c) => c.classList.remove('hot'));
+    chip.classList.add('hot');
+    liveClipState.offset = parseInt(chip.dataset.offset, 10);
+  }));
+}
+bindOffsetChips();
+
+/* SSE: liveclip events */
+function onLiveClipEvent(d) {
+  if (!d) return;
+  if (d.type === 'status') {
+    if (d.running) {
+      liveClipState.status = d;
+      renderLiveClip();
+    } else if (liveClipState.status) {
+      liveClipState.status = null;
+      renderLiveClip();
+      liveLog('Recording idle.');
+    }
+  }
+  if (d.type === 'cut') {
+    liveLog(`🎬 Live clip → "${d.name}" (${d.duration?.toFixed(1)}s)`, 'feed-info');
+    refreshVideos();
+  }
+  if (d.type === 'ps5') liveLog('PS5: ' + esc(d.state || JSON.stringify(d)), 'feed-info');
+  if (d.type === 'render') {
+    if (d.progress === 'end') liveLog('Render done ✓', 'feed-info');
+  }
 }
 
 /* ------------------------------------------------------------------ autopilot */

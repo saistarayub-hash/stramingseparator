@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
 export const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
@@ -231,4 +232,103 @@ export async function measureLoudness(inputPath) {
     integratedLufs: integrated ? parseFloat(integrated[1]) : null,
     truePeak: peak ? parseFloat(peak[1]) : null,
   };
+}
+
+/** Locate a bold TTF for drawtext overlays across common OSes. */
+export function findFont() {
+  const candidates = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+    'C:\\Windows\\Fonts\\arialbd.ttf',
+    'C:\\Windows\\Fonts\\arial.ttf',
+  ];
+  for (const c of candidates) if (existsSync(c)) return c;
+  return null; // ffmpeg will use its default fontconfig font
+}
+
+/** Escape text for ffmpeg drawtext (single-quoted). */
+export function drawtextEscape(text) {
+  return String(text ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/:/g, '\\:')
+    .replace(/,/g, '\\,')
+    .replace(/%/g, '\\%')
+    .slice(0, 200);
+}
+
+/**
+ * Render a clip to a platform-ready MP4, optionally with a burned title
+ * lower-third and/or timed captions (for Shorts/TikTok).
+ * @param {object} o { start, duration, vertical, title, captions:[{start,end,text}] }
+ */
+export function renderClip(inputPath, outputPath, o = {}, onLog) {
+  const { start = 0, duration = 30, vertical = true, title = null, captions = [] } = o;
+  const font = findFont();
+  const fontArg = font ? `:fontfile='${font}'` : '';
+
+  const base = vertical
+    ? 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920'
+    : 'scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080';
+
+  const filters = [base];
+
+  if (title) {
+    const t = drawtextEscape(title);
+    filters.push(
+      `drawtext=text='${t}':fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=14:fontsize=52:x=(w-text_w)/2:y=h-180${fontArg}:enable='between(t,0,${Math.min(5, duration).toFixed(2)})'`
+    );
+  }
+  for (const c of captions || []) {
+    if (!c || !c.text) continue;
+    const txt = drawtextEscape(c.text);
+    const s = Math.max(0, Number(c.start) || 0);
+    const e = Math.max(s + 0.4, Number(c.end) || s + 1.2);
+    filters.push(
+      `drawtext=text='${txt}':fontcolor=white:box=1:boxcolor=black@0.65:boxborderw=16:fontsize=58:x=(w-text_w)/2:y=h-240${fontArg}:enable='between(t,${s.toFixed(2)},${e.toFixed(2)})'`
+    );
+  }
+
+  const vf = filters.join(',') + ',format=yuv420p';
+  const args = [
+    '-y',
+    '-ss', String(start),
+    '-t', String(duration),
+    '-i', inputPath,
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-vf', vf,
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '21', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-b:a', '192k', '-ar', '48000',
+    '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11',
+    '-movflags', '+faststart',
+    '-progress', 'pipe:1', '-nostats',
+    outputPath,
+  ];
+
+  let last = {};
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let buf = '';
+    let err = '';
+    child.stdout.on('data', (d) => {
+      buf += d.toString();
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx);
+        buf = buf.slice(idx + 1);
+        if (line.trim()) {
+          last = { ...last, ...parseProgress(line + '\n') };
+          if (onLog) onLog({ stage: 'render', ...last });
+        }
+      }
+    });
+    child.stderr.on('data', (d) => (err += d.toString()));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(last);
+      else reject(new Error(err.split('\n').slice(-20).join('\n')));
+    });
+  });
 }

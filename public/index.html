@@ -16,6 +16,7 @@
     </div>
     <nav class="nav">
       <div class="nav-item active" data-view="library"><span class="ico">🎬</span> Library</div>
+      <div class="nav-item" data-view="liveclips"><span class="ico">✂️</span> Live Clips</div>
       <div class="nav-item" data-view="publish"><span class="ico">📤</span> Publish</div>
       <div class="nav-item" data-view="autopilot"><span class="ico">🤖</span> Live Autopilot</div>
       <div class="nav-item" data-view="settings"><span class="ico">⚙️</span> Settings</div>
@@ -76,6 +77,64 @@
 
         <div id="highlights"></div>
         <div id="clips-made" style="display:none"></div>
+      </div>
+    </section>
+
+    <!-- LIVE CLIPS -->
+    <section class="view" id="view-liveclips">
+      <h2 class="page-title">✂️ Live Clips</h2>
+      <p class="page-sub">Streaming on PS5 or YouTube Live? Capture it here and clip Shorts/TikToks <b>mid-stream</b>.</p>
+
+      <div class="panel">
+        <h3>1 · Choose your live source</h3>
+        <div class="live-source-list" id="live-source-list">
+          <label class="live-source-radio sel">
+            <input type="radio" name="livesrc" value="url" checked />
+            <div><div class="t">🎥 Stream URL / HLS</div><div class="d">YouTube Live id, m3u8, RTMP… (runs in your browser-connected server)</div></div>
+          </label>
+          <label class="live-source-radio">
+            <input type="radio" name="livesrc" value="ps5" />
+            <div><div class="t">🎮 PlayStation 5</div><div class="d">Remote-play relay from your PS5 — no capture card (same LAN)</div></div>
+          </label>
+        </div>
+
+        <div class="row" style="margin-top:12px">
+          <div class="field" id="live-url-field">
+            <label>Stream URL or YouTube video id</label>
+            <input class="input" id="live-url" placeholder="dQw4w9WgXcQ or https://…/index.m3u8" />
+          </div>
+          <div class="field" id="live-ps5-field" style="display:none">
+            <label>PS5 Account-ID <span style="color:var(--dim)">(from Remote Play → Link Device)</span></label>
+            <input class="input" id="live-ps5-acc" placeholder="0000000000000000" />
+          </div>
+          <button class="btn btn-primary" id="live-record-btn" style="align-self:flex-end">● Start recording</button>
+        </div>
+        <div class="hint" id="live-hint" style="display:none">Recording… the buffer holds the last ~30s.</div>
+      </div>
+
+      <div class="panel">
+        <h3>2 · Clip a moment (as it happens)</h3>
+        <div class="map-row" id="live-timeline" style="margin-bottom:14px">
+          <div class="map-chip"><span class="k">◀ 30s</span><span class="v">longer ago</span></div>
+          <div class="map-chip hot" data-offset="25"><span class="k">25s</span><span class="v">⚡ ideal</span></div>
+          <div class="map-chip" data-offset="20"><span class="k">20s</span></div>
+          <div class="map-chip" data-offset="15"><span class="k">15s</span></div>
+          <div class="map-chip" data-offset="10"><span class="k">10s</span></div>
+          <div class="map-chip" data-offset="5"><span class="k">now</span><span class="v">5s</span></div>
+        </div>
+        <div class="row" style="margin-bottom:12px">
+          <div class="field"><label>Clip title (lower-third, optional)</label><input class="input" id="live-clip-title" placeholder="THAT CLUTCH 😱" /></div>
+          <div class="field" style="max-width:160px"><label>Length</label>
+            <select class="input" id="live-clip-dur"><option>10</option><option selected>15</option><option>20</option><option>30</option><option>45</option><option>60</option></select>
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:12px">
+          <label class="checkbox-row"><input type="checkbox" id="live-clip-caption" /> Burn-in captions (auto — needs caption source)</label>
+          <label class="checkbox-row"><input type="checkbox" id="live-clip-vertical" checked /> Vertical (9:16)</label>
+          <button class="btn btn-primary" id="live-cut-btn">✂️ Cut the last moment</button>
+        </div>
+        <div class="live-console" id="live-console">Ready. Start a recording to begin clipping.</div>
+        <div id="live-cut-history"></div>
       </div>
     </section>
 
