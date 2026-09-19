@@ -21,9 +21,10 @@
       <div class="nav-item" data-view="autopilot"><span class="ico">🤖</span> Live Autopilot</div>
       <div class="nav-item" data-view="settings"><span class="ico">⚙️</span> Settings</div>
     </nav>
+    <div class="cloud-pill" id="cloud-pill"><span class="led"></span><span id="cloud-pill-text">Cloud: local mode</span></div>
     <div class="foot">
       Upload → auto-fix → clip → post to every platform.<br/>
-      Free tier friendly. Runs locally or on Supabase.
+      Backed by Appwrite cloud or local storage.
     </div>
   </aside>
 
@@ -222,7 +223,32 @@
     <!-- SETTINGS -->
     <section class="view" id="view-settings">
       <h2 class="page-title">⚙️ Settings</h2>
-      <p class="page-sub">Teach the autopilot about you. Saved locally (or in Supabase once connected).</p>
+      <p class="page-sub">Cloud, autopilot personality, platforms. Everything saves as you go.</p>
+
+      <div class="panel">
+        <h3>☁️ Cloud — Appwrite</h3>
+        <div class="cloud-status-card" id="cloud-status-card">
+          <div class="big"><span class="led"></span><span id="cloud-status-text">Checking cloud connection…</span></div>
+          <div class="sub" id="cloud-status-sub"></div>
+        </div>
+        <form id="cloud-form">
+          <div class="settings-grid">
+            <div class="field full"><label>Appwrite endpoint</label>
+              <input class="input" id="cloud-endpoint" placeholder="https://nyc.cloud.appwrite.io/v1" /></div>
+            <div class="field"><label>Project ID</label>
+              <input class="input" id="cloud-project" placeholder="your project id" /></div>
+            <div class="field"><label>API key (server key)</label>
+              <input class="input" id="cloud-key" placeholder="standard_…" type="password" /></div>
+            <div class="field full">
+              <div class="ghost-note">🏗️ <b>One-click setup:</b> paste your Appwrite <b>Project ID</b> + <b>API key</b> and hit <b>Connect</b>. StreamPilot auto-creates the database, collections and a storage bucket ("videos") on your Appwrite project — no manual schema work.</div>
+            </div>
+          </div>
+          <div class="actions-row">
+            <button class="btn btn-primary" id="cloud-connect" type="submit">🔗 Connect to Appwrite</button>
+            <button class="btn btn-danger" id="cloud-disconnect" type="button">Disconnect</button>
+          </div>
+        </form>
+      </div>
 
       <div class="panel">
         <h3>Autopilot personality</h3>
@@ -235,8 +261,6 @@
             <div class="field full"><label>Custom FAQs (one per line: question :: answer)</label>
               <textarea class="input" id="set-faqs" rows="5" placeholder="what rank are you? :: Diamond 2&#10;whats your sens? :: 0.35 at 800dpi"></textarea></div>
             <div class="field full checkbox-row"><input type="checkbox" id="set-autopilot" checked /> <span>Enable auto-replies</span></div>
-            <div class="field"><label>Supabase URL (optional)</label><input class="input" id="set-supabase-url" placeholder="https://xyz.supabase.co" /></div>
-            <div class="field"><label>Supabase anon key (optional)</label><input class="input" id="set-supabase-key" placeholder="eyJ…" /></div>
           </div>
           <div class="actions-row"><button class="btn btn-primary" type="submit">💾 Save settings</button></div>
         </form>

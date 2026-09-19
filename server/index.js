@@ -8,7 +8,12 @@ import { fileURLToPath } from 'node:url';
 import {
   probe, fixVideo, measureLoudness, detectHighlights, cutClip, ffmpegPath, ffprobePath,
 } from './ffmpeg.js';
-import { videos, jobs, publishes, getSettings, saveSettings, uid, hasSupabase } from './store.js';
+import {
+  videos, jobs, publishes, getSettings, saveSettings, uid, hasSupabase,
+  initStore, reinitStore, usingCloud, mirrorToCloud,
+  saveAppwriteCreds, readAppwriteCredsFile,
+} from './store.js';
+import { isConfigured, appwriteConfig, DEFAULT_ENDPOINT } from './appwrite.js';
 import * as yt from './youtube.js';
 import * as autopilot from './autopilot.js';
 import * as liveclip from './liveclip.js';
@@ -50,12 +55,18 @@ const sc = (res, fn) =>
 
 function safeVid(v) {
   if (!v) return null;
-  const { diskPath, ...rest } = v;
+  // Strip local-only fields for the client; keep cloud URLs when present.
+  const { diskPath, fixedPath, ...rest } = v;
   return rest;
 }
 
 // ------------------------------------------------------------------- status
-app.get('/api/status', (_req, res) => res.json({ ok: true, supabase: hasSupabase() }));
+app.get('/api/status', (_req, res) => res.json({
+  ok: true,
+  supabase: hasSupabase(),
+  cloud: usingCloud() ? 'appwrite' : 'local',
+  appwriteConfigured: isConfigured(),
+}));
 
 // ------------------------------------------------------------------- videos
 app.get('/api/videos', (_req, res) => sc(res, videos.list().then((l) => l.map(safeVid))));
@@ -72,10 +83,13 @@ app.post('/api/videos/upload', upload.single('file'), async (req, res) => {
       stage: 'uploaded',
       createdAt: new Date().toISOString(),
     });
-    // Screenshot a thumbnail from the start for the UI
-    const thumbPath = path.join(OUTPUT_DIR, `${id}.jpg`);
-    fs.writeFileSync(path.join(OUTPUT_DIR, `${id}.thumb.log`), '');
     emit('video', { id, name: v.name, stage: 'uploaded' });
+    // In cloud mode, mirror the raw file to Appwrite now (background).
+    if (usingCloud()) {
+      runAsync(async () => {
+        try { await mirrorToCloud({ videoId: id, filePath, name: req.file.originalname }); } catch (e) { console.error('mirror failed:', e.message); }
+      });
+    }
     res.json(safeVid(v));
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -163,6 +177,9 @@ app.post('/api/videos/:id/fix', async (req, res) => {
         fixedPath: outPath,
         fixedInfo: { duration: p.duration, width: p.width, height: p.height, sizeBytes: p.sizeBytes },
       });
+      if (usingCloud()) {
+        try { await mirrorToCloud({ videoId: v.id, filePath: outPath, name: (v.name || 'video').replace(/\.[^.]+$/, '') + '-fixed.mp4' }); } catch (e) { console.error('mirror fixed failed:', e.message); }
+      }
       await jobs.set(jobId, { status: 'done' });
       emit('job', { jobId, status: 'done' });
       emit('video', { id: v.id, stage: 'fixed' });
@@ -201,7 +218,14 @@ app.post('/api/videos/:id/clips', async (req, res) => {
         await cutClip(src, clipPath, { start, duration, vertical: m.vertical !== false }, (prog) =>
           emit('job', { jobId, clip: i, ...prog }));
         const p = await probe(clipPath);
-        clips.push({ id: clipId, start, duration, width: p.width, height: p.height, sizeBytes: p.sizeBytes });
+        let clipViewUrl = null;
+        if (usingCloud()) {
+          try {
+            const { fileId, viewUrl } = await mirrorToCloud({ videoId: v.id, filePath: clipPath, name: `${clipId}.mp4` });
+            clipViewUrl = viewUrl;
+          } catch (e) { console.error('mirror clip failed:', e.message); }
+        }
+        clips.push({ id: clipId, start, duration, width: p.width, height: p.height, sizeBytes: p.sizeBytes, viewUrl: clipViewUrl || undefined });
       }
       await videos.set(v.id, { stage: 'clipped', clips });
       await jobs.set(jobId, { status: 'done', clips });
@@ -388,6 +412,68 @@ app.use('/data/clips', (req, res, next) => {
   next();
 }, express.static(liveclip.CLIP_DIR));
 
+// ------------------------------------------------------------------- Appwrite cloud
+app.get('/api/cloud/status', (_req, res) => {
+  const creds = readAppwriteCredsFile();
+  const endpoint = creds.endpoint || process.env.APPWRITE_ENDPOINT || DEFAULT_ENDPOINT;
+  res.json({
+    configured: isConfigured(),
+    active: usingCloud(),
+    endpoint,
+    projectId: creds.projectId || process.env.APPWRITE_PROJECT_ID || '',
+    apiKey: !!(creds.apiKey || process.env.APPWRITE_API_KEY),
+    databaseId: appwriteConfig().databaseId,
+  });
+});
+
+app.post('/api/cloud/connect', async (req, res) => {
+  try {
+    const { endpoint, projectId, apiKey } = req.body || {};
+    if (!projectId || !apiKey) {
+      return res.status(400).json({ error: 'Project ID and API key are both required.' });
+    }
+    const credsPath = path.join(DATA_DIR, 'appwrite.json');
+    const prior = (() => { try { return fs.readFileSync(credsPath, 'utf8'); } catch { return null; } })();
+
+    // Stage creds in-memory FIRST, pass them via env override, and only
+    // persist to disk after a successful schema bootstrap (transactional).
+    if (endpoint) saveAppwriteCreds({ endpoint });
+    saveAppwriteCreds({ projectId, apiKey });
+
+    const info = await reinitStore();
+    if (info.error) {
+      // Roll back to prior creds (or none).
+      if (prior === null) fs.rmSync(credsPath, { force: true });
+      else fs.writeFileSync(credsPath, prior);
+      await reinitStore(); // revert in-memory SDK to prior config
+      return res.status(400).json({ error: 'Could not reach/configure Appwrite: ' + info.error + '. Check your Project ID and API key, and that the endpoint is reachable.' });
+    }
+
+    res.json({ ok: true, cloud: true, endpoint: appwriteConfig().endpoint, created: info.created || [] });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/cloud/disconnect', (_req, res) => {
+  fs.rmSync(path.join(DATA_DIR, 'appwrite.json'), { force: true });
+  delete process.env.APPWRITE_PROJECT_ID;
+  delete process.env.APPWRITE_API_KEY;
+  delete process.env.APPWRITE_ENDPOINT;
+  reinitStore().then(() => res.json({ ok: true, cloud: usingCloud() ? 'appwrite' : 'local' }));
+});
+
+// ------------------------------------------------------------------- settings
+app.get('/api/settings', (_req, res) => sc(res, getSettings().then((s) => {
+  const { youtubeToken, ...safe } = s;
+  return { ...safe, youtubeToken: !!youtubeToken };
+})));
+app.post('/api/settings', async (req, res) => {
+  const { youtubeToken, ...rest } = req.body || {};
+  await saveSettings(rest);
+  res.json({ ok: true });
+});
+
 // ------------------------------------------------------------------- YouTube auth
 app.get('/api/youtube/status', async (_req, res) => {
   try {
@@ -447,17 +533,6 @@ app.post('/api/autopilot/say', async (req, res) => {
   }
 });
 
-// ------------------------------------------------------------------- settings
-app.get('/api/settings', (_req, res) => sc(res, getSettings().then((s) => {
-  const { youtubeToken, ...safe } = s;
-  return { ...safe, youtubeToken: !!youtubeToken };
-})));
-app.post('/api/settings', async (req, res) => {
-  const { youtubeToken, ...rest } = req.body || {};
-  await saveSettings(rest);
-  res.json({ ok: true });
-});
-
 // ------------------------------------------------------------------- SSE
 import { hub } from './pubsub.js';
 
@@ -493,14 +568,23 @@ function runAsync(fn) {
 
 // ------------------------------------------------------------------- boot
 const PORT = Number(process.env.PORT) || 8787;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log('');
-  console.log('  ┌──────────────────────────────────────────────────────┐');
-  console.log('  │   🎮 StreamPilot — your cross-platform autopilot      │');
-  console.log('  └──────────────────────────────────────────────────────┘');
-  console.log(`  Dashboard:  http://localhost:${PORT}`);
-  console.log(`  FFmpeg:     ${ffmpegPath}`);
-  console.log(`  FFprobe:    ${ffprobePath}`);
-  console.log(`  Supabase:   ${hasSupabase() ? 'connected ✅' : 'not configured (using local data/)'}`);
-  console.log('');
-});
+
+async function boot() {
+  const cloudInfo = await initStore();
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log('');
+    console.log('  ┌──────────────────────────────────────────────────────┐');
+    console.log('  │   🎮 StreamPilot — your cross-platform autopilot      │');
+    console.log('  └──────────────────────────────────────────────────────┘');
+    console.log(`  Dashboard:  http://localhost:${PORT}`);
+    console.log(`  FFmpeg:     ${ffmpegPath}`);
+    console.log(`  FFprobe:    ${ffprobePath}`);
+    if (cloudInfo?.cloud) {
+      console.log(`  ☁️  Appwrite:   ${appwriteConfig().endpoint} ✅`);
+    } else {
+      console.log('  ☁️  Appwrite:   not configured (local data/) — add keys in Settings → Cloud');
+    }
+    console.log('');
+  });
+}
+boot();

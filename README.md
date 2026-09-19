@@ -10,27 +10,47 @@ gameplay, drop it in, and it:
 5. **Runs your live chat** on **YouTube Live + TikTok Live** simultaneously — greeting fans,
    answering FAQs, and reacting to `!clip` — all automatic, with a manual override.
 6. **Clips your live stream into Shorts/TikToks mid-game** — record a live source (YouTube Live,
-   HLS, or your **PS5 via remote play — no capture card**) into a rolling buffer, then hit one
-   button to turn the last 10–60 seconds into a titled, vertical clip.
+   HLS, **TikTok from your phone**, or your **PS5 via remote play — no capture card**) into a
+   rolling buffer, then hit one button to turn the last 10–60 seconds into a titled, vertical clip.
 
-> Built free-tier-first: **FFmpeg** (open source), **YouTube Data API** (free 10k quota/day),
-> **TikTokLive** (community live-chat reader), and optional **Supabase** for cloud auth/storage.
+> **Free-tier-first + cloud-ready:** **FFmpeg** (open source), **YouTube Data API** (free 10k
+> quota/day), **TikTokLive** (community connector), and **Appwrite** (free cloud tier) for
+> storage + database. When Appwrite isn't connected yet, everything runs on a local JSON store —
+> you can use the whole app with zero setup.
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Install deps (bundles a static FFmpeg/FFprobe via npm — no system install needed)
 npm install
-
-# 2. Run it
 npm start
 # → open http://localhost:8787
 ```
 
-Everything works **locally out of the box** (data lives in `./data/`). No keys required for
-upload → analyze → fix → clip. You only need keys for the *publishing* and *live chat* parts.
+Everything works **locally out of the box** (data lives in `./data/`). Upload → analyze → fix →
+clip needs no keys. Publishing and live chat need their platform keys (below).
+
+---
+
+## ☁️ Connect to Appwrite (90 seconds, free tier)
+
+The dashboard is wired for an Appwrite backend at **https://nyc.cloud.appwrite.io/v1**.
+
+1. Create a project at [cloud.appwrite.io](https://cloud.appwrite.io) (NYC region → your endpoint
+   is `https://nyc.cloud.appwrite.io/v1`).
+2. **Overview → API Keys → Create API key** → name it `StreamPilot` → give it *all* scopes
+   (or at least `databases.*` and `storage.*`) → copy the key.
+3. In StreamPilot: **Settings → Cloud** → paste your **Project ID** + **API key** → **Connect**.
+
+StreamPilot then **auto-creates** everything on your project:
+- Database `streampilot` with collections `videos`, `publishes`, `settings`
+- Storage bucket `videos` (20 GB max file) — gameplay, fixed videos and clips are mirrored there
+  automatically, so they get public URLs and survive restarts.
+
+> **API key safety:** use a **server-side** key only (the dashboard runs on your own machine).
+> `.env` overrides are available too: `APPWRITE_ENDPOINT`, `APPWRITE_PROJECT_ID`,
+> `APPWRITE_API_KEY`.
 
 ---
 
@@ -146,7 +166,8 @@ server/
   autopilot.js  Orchestrates both platforms + brain + sending replies
   liveclip.js   Live recorder (rolling buffer) + clip/cut engine + PS5 orchestration
   live/         youtube-source.cjs — resolve a YouTube live id → HLS manifest
-  store.js      Local JSON store (auto) or Supabase (when configured)
+  store.js      Storage facade: Appwrite cloud (auto) or local JSON fallback
+  appwrite.js   Appwrite SDK wrapper + schema bootstrap + file mirroring
   pubsub.js     In-memory pub/sub → browser via Server-Sent Events
 public/
   index.html    Dashboard shell
@@ -183,7 +204,7 @@ scripts/
 - [ ] **GPT/Claude/Gemini brain swap** — one function in `brain.js`
 - [ ] **!clip → auto-cut the last 30s live** and post to Shorts right after stream
 - [ ] YouTube Shorts + Instagram Reels + X/Twitter in the publish matrix
-- [ ] Uploads to **Supabase Storage** for big files + multi-device
+- [x] **Appwrite cloud** storage + database (auto-mirrors videos/clips) ✨
 - [ ] View-count/donations dashboard; TikTok gift shout-outs
 
 ## Legal & safety

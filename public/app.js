@@ -67,7 +67,7 @@ function showView(name) {
   if (name === 'liveclips') refreshLiveClip();
   if (name === 'autopilot') refreshAutopilot();
   if (name === 'publish') refreshPublish();
-  if (name === 'settings') refreshSettings();
+  if (name === 'settings') { refreshSettings(); refreshCloud(); }
 }
 
 $$('.nav-item').forEach((el) => el.addEventListener('click', () => showView(el.dataset.view)));
@@ -700,6 +700,70 @@ function refreshPublishDropdown() {
   };
 }
 
+/* ------------------------------------------------------------------ cloud (Appwrite) */
+async function refreshCloud() {
+  try {
+    const st = await api.get('/api/cloud/status');
+    renderCloud(st);
+  } catch { /* */ }
+}
+
+function renderCloud(st) {
+  if (!st) return;
+  // sidebar pill
+  const pill = $('#cloud-pill');
+  const pillText = $('#cloud-pill-text');
+  if (pill && pillText) {
+    pill.classList.toggle('on', st.active);
+    pillText.textContent = st.active ? 'Cloud: Appwrite' : 'Cloud: local mode';
+  }
+  // settings card
+  const card = $('#cloud-status-card');
+  const text = $('#cloud-status-text');
+  const sub = $('#cloud-status-sub');
+  if (card && text) {
+    card.querySelector('.big').classList.toggle('on', st.active);
+    if (st.active) {
+      text.textContent = 'Connected to Appwrite ✓';
+      sub.innerHTML = `Endpoint <b>${esc(st.endpoint)}</b> · tracked db <b>${esc(st.databaseId)}</b> — videos and clips are mirrored to the cloud automatically.`;
+    } else if (st.configured) {
+      text.textContent = 'Configured, but not active';
+      sub.textContent = 'Credentials found but the schema wasn\'t initialised — re-connect to fix.';
+    } else {
+      text.textContent = 'No cloud connected';
+      sub.textContent = 'Add your Appwrite Project ID + API key below to go live on the cloud. Until then everything runs locally.';
+    }
+  }
+  // prefill endpoint if blank
+  const ep = $('#cloud-endpoint');
+  if (ep && !ep.value && st.endpoint) ep.value = st.endpoint;
+}
+
+$('#cloud-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const endpoint = $('#cloud-endpoint').value.trim() || 'https://nyc.cloud.appwrite.io/v1';
+  const projectId = $('#cloud-project').value.trim();
+  const apiKey = $('#cloud-key').value.trim();
+  if (!projectId || !apiKey) { toast('Project ID and API key are both required.', 'error'); return; }
+  setBusy($('#cloud-connect'), true, 'Connecting…');
+  try {
+    const r = await api.post('/api/cloud/connect', { endpoint, projectId, apiKey });
+    toast('☁️ Appwrite connected! ' + ((r.created || []).length ? `Created: ${r.created.join(', ')}` : ''), 'ok');
+    $('#cloud-key').value = '';
+    await refreshCloud();
+  } catch (e2) {
+    toast('Connection failed: ' + e2.message, 'error');
+  } finally {
+    setBusy($('#cloud-connect'), false);
+  }
+});
+
+$('#cloud-disconnect')?.addEventListener('click', async () => {
+  await api.post('/api/cloud/disconnect');
+  toast('Disconnected from Appwrite — back to local mode.');
+  await refreshCloud();
+});
+
 /* ------------------------------------------------------------------ settings */
 async function refreshSettings() {
   try {
@@ -711,8 +775,6 @@ async function refreshSettings() {
     $('#set-donation').value = s.donation || '';
     $('#set-autopilot').checked = !!s.autopilotEnabled;
     $('#set-faqs').value = (s.brain?.faqs || []).map((f) => `${f.question} :: ${f.answer}`).join('\n');
-    $('#set-supabase-url').value = s.supabaseUrl || '';
-    $('#set-supabase-key').value = s.supabaseKey || '';
   } catch { /* */ }
 }
 
@@ -730,8 +792,6 @@ $('#settings-form')?.addEventListener('submit', async (e) => {
     socials: $('#set-socials').value.trim(),
     donation: $('#set-donation').value.trim(),
     autopilotEnabled: $('#set-autopilot').checked,
-    supabaseUrl: $('#set-supabase-url').value.trim(),
-    supabaseKey: $('#set-supabase-key').value.trim(),
     brain: {
       faqs: $('#set-faqs').value.split('\n').map((l) => {
         const [q, a] = l.split('::');
@@ -762,6 +822,7 @@ function handleOauthParams() {
 
 async function init() {
   connectEvents();
+  await refreshCloud();
   await refreshVideos();
   await refreshAutopilot();
   handleOauthParams();
