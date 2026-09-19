@@ -185,6 +185,9 @@ Videos + settings live in the `streampilot-data` volume, so they survive restart
 
 ### 🆓 Run it free & always-on (the recommended way — zero $, never sleeps)
 
+> 📖 **Full click-by-click guide (includes Oracle signup + DuckDNS/Caddy + YouTube OAuth):
+> [docs/DEPLOY-FREE.md](docs/DEPLOY-FREE.md)**
+
 The best **$0** host is an **Oracle Cloud Always Free** VM: up to 4 ARM cores + 24 GB RAM and
 a **200 GB permanent disk**, free forever, no idle spin-down. StreamPilot runs comfortably on
 the smallest free shape (1 OCPU / 6 GB or even a 1 GB AMD micro).
@@ -207,19 +210,14 @@ It stores your Appwrite/YouTube keys in `/opt/streampilot/.env` and starts the a
 `docker compose` + `restart: unless-stopped` (survives reboots). The first build takes a few
 minutes; after that it's live 24/7 at no cost.
 
-> **Make it https + pretty for free:**
-> 1. Grab a free DNS name from [DuckDNS](https://duckdns.org) (e.g. `mystream.duckdns.org`).
-> 2. Point it at your VM's public IP, open port **443** in the Oracle VCN security list.
-> 3. Run the reverse proxy (free, auto-TLS):
->    ```bash
->    apt-get install -y caddy
->    # /etc/caddy/Caddyfile:
->    #   mystream.duckdns.org { reverse_proxy 127.0.0.1:8787 }
->    systemctl enable --now caddy
->    ```
-> 4. Set `APP_URL=https://mystream.duckdns.org` (in `.env`) and add
->    `https://mystream.duckdns.org/auth/youtube/callback` to your Google OAuth client —
->    that's what makes the **YouTube Connect** button work on your public link.
+> **Make it https + pretty for free:** run the second one-command script after the first:
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/saistarayub-hash/stramingseparator/arena/01a0ba1a-stramingseparator/scripts/setup-https.sh -o /tmp/sp-https.sh
+> bash /tmp/sp-https.sh
+> ```
+> It asks for your **DuckDNS subdomain + token**, installs **Caddy** (free auto-TLS), keeps DNS
+> refreshed, updates `APP_URL`, and restarts the app → `https://your-name.duckdns.org`.
+> Then set your Google OAuth redirect to `https://your-name.duckdns.org/auth/youtube/callback`.
 
 > **Is Oracle a pain to sign up for?** Honestly a little (card for verification, ARM
 > capacity can be scarce in some regions). If you hit a wall, a €3–4/mo VPS from Hetzner or
