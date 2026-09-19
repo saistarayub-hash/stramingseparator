@@ -90,7 +90,11 @@
         <div class="live-source-list" id="live-source-list">
           <label class="live-source-radio sel">
             <input type="radio" name="livesrc" value="url" checked />
-            <div><div class="t">🎥 Stream URL / HLS</div><div class="d">YouTube Live id, m3u8, RTMP… (runs in your browser-connected server)</div></div>
+            <div><div class="t">🎥 Stream URL / YouTube Live</div><div class="d">Live id, m3u8, RTMP… (recorded by this server)</div></div>
+          </label>
+          <label class="live-source-radio">
+            <input type="radio" name="livesrc" value="tiktok" />
+            <div><div class="t">📱 TikTok — stream from your phone</div><div class="d">Go live in the TikTok app on your phone, paste your @username here</div></div>
           </label>
           <label class="live-source-radio">
             <input type="radio" name="livesrc" value="ps5" />
@@ -103,10 +107,15 @@
             <label>Stream URL or YouTube video id</label>
             <input class="input" id="live-url" placeholder="dQw4w9WgXcQ or https://…/index.m3u8" />
           </div>
+          <div class="field" id="live-tiktok-field" style="display:none">
+            <label>TikTok @username or profile link</label>
+            <input class="input" id="live-tiktok-user" placeholder="@yourchannel or tiktok.com/@yourchannel/live" />
+          </div>
           <div class="field" id="live-ps5-field" style="display:none">
             <label>PS5 Account-ID <span style="color:var(--dim)">(from Remote Play → Link Device)</span></label>
             <input class="input" id="live-ps5-acc" placeholder="0000000000000000" />
           </div>
+          <button class="btn" id="live-check-btn" style="align-self:flex-end; display:none">🔍 Check if live</button>
           <button class="btn btn-primary" id="live-record-btn" style="align-self:flex-end">● Start recording</button>
         </div>
         <div class="hint" id="live-hint" style="display:none">Recording… the buffer holds the last ~30s.</div>

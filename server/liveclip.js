@@ -86,6 +86,7 @@ export async function startRecorder(sourceUrl) {
   const url = String(sourceUrl || '').trim();
   if (!url) throw new Error('No source URL given.');
 
+  const sourceType = detectSourceType(url);
   const resolvedUrl = await resolveInputUrl(url);
 
   const id = `live-${Date.now().toString(36)}`;
@@ -93,7 +94,7 @@ export async function startRecorder(sourceUrl) {
   mkdirSync(dir, { recursive: true });
 
   const rec = {
-    id, source: resolvedUrl === url ? 'url' : 'youtube', url: resolvedUrl, dir,
+    id, source: sourceType, url: resolvedUrl, dir,
     proc: null, createdAt: Date.now(), lastDone: 0, running: true,
     processed: 0, haveWriteable: false, error: null,
   };
@@ -162,22 +163,74 @@ export async function startRecorder(sourceUrl) {
 }
 
 async function resolveInputUrl(url) {
-  if (!/youtube\.com|youtu\.be/i.test(url) && !/^[A-Za-z0-9_-]{11}$/.test(url.trim())) return url;
+  const trimmed = String(url || '').trim();
+  const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed);
 
-  const idPart = (url.match(/(?:v=|live\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || url.trim().match(/^([A-Za-z0-9_-]{11})$/) || [null, url.trim()])[1];
-  try {
-    const hls = await fetchYouTubeLiveHls(idPart);
-    if (hls) return hls;
-    throw new Error('No live HLS found (is it live & public?).');
-  } catch (e) {
-    throw new Error('Could not resolve YouTube live: ' + (e.message || e));
+  // 1. TikTok profile / @username / profile URL → live stream URL (phone source).
+  //    (Only for inputs with no scheme at all, or an http(s) tiktok.com link.)
+  if ((!hasScheme && !/^[A-Za-z0-9_-]{11}$/.test(trimmed)) || /tiktok\.com/i.test(trimmed)) {
+    const { fetchLiveInfo } = await import('./tiktok.js');
+    const info = await fetchLiveInfo(trimmed);
+    if (!info.isLive) throw new Error(`@${info.uniqueId} is not live right now. (Or make the stream public — private/sub-only streams can't be recorded.)`);
+    const best = info.streamUrls[0] || null;
+    if (!best) throw new Error('TikTok is live, but no capturable stream URL was returned. Try again in a minute.');
+    return best;
   }
+
+  // 2. YouTube live id / watch / live URL
+  if (/youtube\.com|youtu\.be/i.test(trimmed) || /^[A-Za-z0-9_-]{11}$/.test(trimmed)) {
+    const idPart = (trimmed.match(/(?:v=|live\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})/) || trimmed.match(/^([A-Za-z0-9_-]{11})$/) || [null, trimmed])[1];
+    try {
+      const hls = await fetchYouTubeLiveHls(idPart);
+      if (hls) return hls;
+      throw new Error('No live HLS found (is it live & public?).');
+    } catch (e) {
+      throw new Error('Could not resolve YouTube live: ' + (e.message || e));
+    }
+  }
+
+  // 3. Anything else FFmpeg can open directly (m3u8, rtmp://, http ts, file…)
+  return trimmed;
 }
 
 function parseTs(s) {
   if (!s) return 0;
   const p = s.split(':').map(Number);
   return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : 0;
+}
+
+/** Classify a source string for the UI: 'tiktok' | 'youtube' | 'ps5' | 'url'. */
+export function detectSourceType(input) {
+  const s = String(input || '').trim();
+  if (s.startsWith('@')) return 'tiktok';
+  if (/tiktok\.com/i.test(s)) return 'tiktok';
+  if (/youtube\.com|youtu\.be/i.test(s) || /^[A-Za-z0-9_-]{11}$/.test(s)) return 'youtube';
+  if (/^http:\/\/localhost/i.test(s) && /ps5/i.test(s)) return 'ps5';
+  return 'url';
+}
+
+/**
+ * Resolve a human input (@user / TikTok link / YouTube id / URL) into
+ * metadata + a capture-ready source URL, without starting a recording.
+ * Drives the Live Clips "check source" button.
+ */
+export async function inspectSource(input) {
+  const s = String(input || '').trim();
+  if (!s) throw new Error('Enter a source first.');
+  const type = detectSourceType(s);
+  const resolved = await resolveInputUrl(s);
+  let detail = null;
+  if (type === 'tiktok') {
+    const { fetchLiveInfo } = await import('./tiktok.js');
+    const info = await fetchLiveInfo(s);
+    detail = {
+      title: info.title,
+      viewers: info.viewerCount,
+      isLive: info.isLive,
+      size: info.streamSize,
+    };
+  }
+  return { type, resolvedUrl: resolved, detail };
 }
 
 export function stopRecorder() {

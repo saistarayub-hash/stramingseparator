@@ -68,9 +68,15 @@ Start it with a **YouTube video/live ID** and/or a **TikTok @username**. It:
 The **Live Clips** tab records a live source into a rolling ~30s buffer and lets you cut the
 moment *as it happens* — no waiting for the VOD, no re-encoding of the whole stream.
 
-- **Pick a source:** a stream URL / YouTube live id, or your **PS5**.
+- **Pick a source:** a stream URL / YouTube live id, your **PS5**, or **TikTok from your phone**.
 - While you play, hit **"✂️ Cut the last moment"** → choose how far back (5–30s) and a title →
   it renders a **vertical 9:16 clip** straight into your Library, ready to publish.
+
+**Clipping your TikTok phone live 📱:** go live in the TikTok app on your phone (as normal),
+then in Live Clips pick **"TikTok — stream from your phone"**, paste your `@username`, hit
+**🔍 Check if live** (shows title + viewers), then **Start recording**. StreamPilot resolves your
+live stream URL (HLS/FLV) via the same connector that powers the chat and records it into the
+clip buffer — so you can cut TikTok clips while streaming from your phone.
 
 **Clipping straight off the PS5 (no capture card):**
 1. On your PS5: *Settings → System → Remote Play → Enable Remote Play* (note the Account-ID on

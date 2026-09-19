@@ -11,6 +11,81 @@ const { TikTokLiveConnection } = require('tiktok-live-connector');
 
 export const bus = new EventEmitter();
 
+function normalizeId(input) {
+  let s = String(input || '').trim().replace(/^@/, '');
+  // accept profile URLs: https://www.tiktok.com/@user or /@user/live
+  const m = s.match(/tiktok\.com\/(@)?([^/?#]+)/i);
+  if (m) s = m[2];
+  return s;
+}
+
+/**
+ * Resolve a TikTok profile/@username to its LIVE stream URLs (no login).
+ * Used by the Live Clips "phone TikTok" source. Returns null-ish fields when
+ * the account isn't live. Prefers HLS (.m3u8), falls back to FLV SD/HD.
+ */
+export async function fetchLiveInfo(uniqueIdOrUrl) {
+  const clean = normalizeId(uniqueIdOrUrl);
+  if (!clean) throw new Error('Please provide a TikTok @username or profile URL.');
+
+  const conn = new TikTokLiveConnection(clean, {
+    processInitialData: false,
+    fetchRoomInfoOnConnect: false,
+  });
+
+  try {
+    const info = await conn.fetchRoomInfo();
+    // Pull the stream URLs from whatever shape the connector returns.
+    // Docs shape:            info.stream_url.hls_pull_url (+ _map variants)
+    // SDK live-route shape:  info.stream_url.{hls_pull_url,flv_pull_url:{HD1,SD1,SD2},rtmp_pull_url}
+    const su = (info && (info.stream_url || info.streamUrl)) || {};
+    const hlsMap = su.hls_pull_url_map || {};
+    const flvMap = (su.flv_pull_url || {});
+    const rawHls = typeof su.hls_pull_url === 'string' ? su.hls_pull_url : null;
+    const rawLd = typeof su.hls_pull_url_ld === 'string' ? su.hls_pull_url_ld : null;
+    const urls = [
+      rawHls, rawLd,
+      hlsMap.HD1, hlsMap.HD2, hlsMap.SD1, hlsMap.SD2,
+      flvMap.HD1, flvMap.SD1, flvMap.SD2,
+      su.rtmp_pull_url,
+    ].filter((u) => typeof u === 'string' && /^https?:\/\//.test(u));
+
+    // status: 2 === live, 4 === ended; also accept is_live / nested room.status
+    const status = info?.status ?? info?.room?.status;
+    const ended = status === 4;
+    // A capturable HLS/flv URL is itself proof of a live stream (some shapes
+    // omit the status flag) — as long as it isn't marked ended.
+    const isLive =
+      status === 2 ||
+      info?.is_live === true ||
+      info?.user?.status === 2 ||
+      (!ended && urls.length > 0);
+
+    const viewers = info?.user_count ?? info?.stats?.user_count ?? info?.stats?.total_user ?? info?.room?.user_count ?? null;
+
+    return {
+      uniqueId: clean,
+      isLive,
+      title: info?.title || info?.room?.title || null,
+      viewerCount: viewers != null ? Number(viewers) : null,
+      streamUrls: urls,
+      streamSize: su.stream_size_width && su.stream_size_height
+        ? { width: su.stream_size_width, height: su.stream_size_height }
+        : null,
+      ended,
+    };
+  } catch (e) {
+    // UserOfflineError (or a similar offline detail) = not live, not a failure.
+    const name = (e && (e.name || e.constructor?.name || '')) + ' ' + (e && (e.message || ''));
+    if (/offline|not.?live|live.*ended/i.test(name)) {
+      return { uniqueId: clean, isLive: false, ended: /ended/i.test(name), title: null, viewerCount: null, streamUrls: [] };
+    }
+    throw e;
+  } finally {
+    try { conn.disconnect(); } catch { /* noop */ }
+  }
+}
+
 let connection = null;
 let currentUniqueId = null;
 

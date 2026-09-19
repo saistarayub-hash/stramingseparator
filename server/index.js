@@ -328,6 +328,32 @@ app.post('/api/liveclip/record', async (req, res) => {
   }
 });
 
+app.post('/api/liveclip/inspect', async (req, res) => {
+  try {
+    const info = await liveclip.inspectSource(req.body?.url);
+    res.json({ ok: true, ...info });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// TikTok phone live: resolve @username → record the live stream
+app.post('/api/liveclip/record/tiktok', async (req, res) => {
+  try {
+    const { fetchLiveInfo } = await import('./tiktok.js');
+    const user = req.body?.username || req.body?.url;
+    const info = await fetchLiveInfo(user);
+    if (!info.isLive) throw new Error(info.ended
+      ? `@${info.uniqueId}'s live already ended. Wait for the next stream.`
+      : `@${info.uniqueId} is not live right now. Start a TikTok live from your phone first.`);
+    if (!info.streamUrls[0]) throw new Error('Could not find a capturable stream URL. TikTok may be restricting it.');
+    const st = await liveclip.startRecorder(info.streamUrls[0]);
+    res.json({ ok: true, live: info, status: st });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/liveclip/record/ps5', async (req, res) => {
   try {
     const hls = await liveclip.startPs5(req.body || {});

@@ -398,7 +398,9 @@ function renderLiveClip() {
   $$('input[name="livesrc"]').forEach((r) => r.addEventListener('change', () => {
     liveClipState.source = r.value;
     $('#live-url-field').style.display = r.value === 'url' ? 'flex' : 'none';
+    $('#live-tiktok-field').style.display = r.value === 'tiktok' ? 'flex' : 'none';
     $('#live-ps5-field').style.display = r.value === 'ps5' ? 'flex' : 'none';
+    $('#live-check-btn').style.display = r.value === 'tiktok' ? 'inline-flex' : 'none';
   }));
 }
 
@@ -420,6 +422,14 @@ $('#live-record-btn')?.addEventListener('click', async () => {
       const r = await api.post('/api/liveclip/record/ps5', { accountId: acc });
       liveClipState.status = r.status;
       liveLog('PS5 relay ready at ' + r.hls + ' — recording.');
+    } else if (liveClipState.source === 'tiktok') {
+      const user = $('#live-tiktok-user').value.trim();
+      if (!user) { toast('Enter your TikTok @username.', 'error'); return; }
+      liveLog(`Resolving TikTok live for @${user.replace(/^@/, '')} …`);
+      const r = await api.post('/api/liveclip/record/tiktok', { username: user });
+      liveClipState.status = r.status;
+      const v = r.live?.viewerCount;
+      liveLog(`📱 TikTok LIVE captured (title: ${r.live?.title || 'n/a'}${v ? ` · ${v} viewers` : ''}).`);
     } else {
       const url = $('#live-url').value.trim();
       if (!url) { toast('Enter a stream URL or YouTube id.', 'error'); return; }
@@ -435,6 +445,24 @@ $('#live-record-btn')?.addEventListener('click', async () => {
     toast('Could not start: ' + e.message, 'error');
   } finally {
     setBusy($('#live-record-btn'), false);
+  }
+});
+
+$('#live-check-btn')?.addEventListener('click', async () => {
+  if (liveClipState.source !== 'tiktok') return;
+  const user = $('#live-tiktok-user').value.trim();
+  if (!user) { toast('Enter your TikTok @username first.', 'error'); return; }
+  setBusy($('#live-check-btn'), true, 'Checking…');
+  try {
+    const r = await api.post('/api/liveclip/inspect', { url: user });
+    const d = r.detail || {};
+    if (d.isLive) liveLog(`🟢 @${user.replace(/^@/, '')} is LIVE — ${d.title || ''} (${d.viewers ?? '?'} viewers)`, 'feed-ok');
+    else liveLog(`⚪ @${user.replace(/^@/, '')} is not live right now.`, 'feed-warn');
+  } catch (e) {
+    liveLog('⚠️ ' + e.message, 'feed-error');
+    toast('Check failed: ' + e.message, 'error');
+  } finally {
+    setBusy($('#live-check-btn'), false);
   }
 });
 
