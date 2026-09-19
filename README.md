@@ -23,13 +23,17 @@ gameplay, drop it in, and it:
 
 ## Quick start
 
+**No server at home?** Scroll down to **"Put it online — 3 clicks"** and click the deploy
+button — that's the one-click path.
+
+**On your own machine:**
 ```bash
 npm install
 npm start
 # → open http://localhost:8787
 ```
 
-Everything works **locally out of the box** (data lives in `./data/`). Upload → analyze → fix →
+Everything works locally out of the box (data lives in `./data/`). Upload → analyze → fix →
 clip needs no keys. Publishing and live chat need their platform keys (below).
 
 ---
@@ -156,72 +160,51 @@ captions are simply skipped and the clip is cut without them.
 
 ---
 
-## 🚀 Run it almost anywhere
+## 🚀 Put it online — 3 clicks (no terminal, no Oracle)
 
-StreamPilot is a single Node service, so it runs anywhere Node runs. Here's the fast path.
+The repo is public, so the **Deploy to Render** button does it all. You just paste your two
+Appwrite keys.
 
-### Docker (any machine with Docker)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/saistarayub-hash/stramingseparator/tree/arena/01a0ba1a-stramingseparator)
+
+1. Click the button → sign in to Render (free) → **Create Blueprint**.
+2. Where it asks for the Appwrite env vars, paste your **Project ID** and **API key**.
+   (Footgun: Render's free tier sleeps after ~15 min idle & has no disk — fine here because
+   **Appwrite holds your library**. For the never-sleeping $0 box, see the Oracle line below.)
+3. When it finishes, Render gives you a link like `https://streampilot.onrender.com` — open it. ✅
+
+### Ultra-cheat-sheet (everything else is optional)
+
+| Want | Do |
+|---|---|
+| App live at home quickly | `npm install` then `npm start` → `http://localhost:8787` |
+| App online for free (one button) | ⬆ the Deploy to Render button above |
+| ALWAYS-on, free forever, real disk | Oracle "Always Free" VM → 2 commands, below |
+| Free https + your own name | the HTTPS script, below |
+
+---
+
+### Oracle Always-Free (only if you want it 24/7 with zero idle sleep)
+
+**Two commands** (after making the VM — full click-through in
+[docs/DEPLOY-FREE.md](docs/DEPLOY-FREE.md)):
+
 ```bash
-cp .env.example .env      # then fill in your YOUTUBE_* keys (optional)
-docker compose up --build
-# → open http://localhost:8787
+sudo -i
+curl -fsSL https://raw.githubusercontent.com/saistarayub-hash/stramingseparator/arena/01a0ba1a-stramingseparator/scripts/setup-vps.sh -o /tmp/sp-setup.sh
+bash /tmp/sp-setup.sh          # pastes your 2 Appwrite keys, installs everything, starts it
 ```
-Videos + settings live in the `streampilot-data` volume, so they survive restarts.
+→ open `http://<vm-ip>:8787`.
 
-### Render (one-click, $0 but sleeps + no disk)
-1. Push this repo to GitHub.
-2. [render.com](https://render.com) → **New + → Blueprint** → pick your repo.
-3. `render.yaml` spins up the web service on the **free tier** (750 hrs/mo, ~15-min
-   idle sleep). Add your `YOUTUBE_*` and `APPWRITE_*` env vars in the Render dashboard.
-4. Set `APP_URL` to `https://<your-app>.onrender.com` and add that OAuth redirect
-   (`https://<your-app>.onrender.com/auth/youtube/callback`) in Google Cloud Console.
-
-> **Caveats on Render's free tier:** it can't attach a persistent disk, so connect
-> Appwrite (your durable store) and treat `/app/data` as scratch. For a genuinely
-> free *never-sleeping* server with a real 200 GB disk, use the Oracle path below.
+Then **one more** for `https://yourname.duckdns.org`:
+```bash
+curl -fsSL https://raw.githubusercontent.com/saistarayub-hash/stramingseparator/arena/01a0ba1a-stramingseparator/scripts/setup-https.sh -o /tmp/sp-https.sh
+bash /tmp/sp-https.sh          # asks for your DuckDNS subdomain + token
+```
+Skip Oracle if it feels like too much — Render's button above is genuinely enough to start.
 
 > **Fly.io / Railway / any VPS:** it's just `node server/index.js` — set `PORT`, `DATA_DIR`
 > (persistent disk), and `APP_URL`. A `Dockerfile` is included for containers.
-
-### 🆓 Run it free & always-on (the recommended way — zero $, never sleeps)
-
-> 📖 **Full click-by-click guide (includes Oracle signup + DuckDNS/Caddy + YouTube OAuth):
-> [docs/DEPLOY-FREE.md](docs/DEPLOY-FREE.md)**
-
-The best **$0** host is an **Oracle Cloud Always Free** VM: up to 4 ARM cores + 24 GB RAM and
-a **200 GB permanent disk**, free forever, no idle spin-down. StreamPilot runs comfortably on
-the smallest free shape (1 OCPU / 6 GB or even a 1 GB AMD micro).
-
-| Option | $ | Sleeps? | Persistent disk? | Verdict |
-|---|---|---|---|---|
-| **Oracle Always Free VM** | $0 forever | ❌ never | ✅ 200 GB | ⭐ best for this app |
-| Render free web service | $0 | ✅ after ~15 min idle | ❌ none | quick demo only |
-| Fly.io free | $0 | ✅ on idle (VM stopped by default) | ⚠️ 3 GB paid volumes | trial-ish |
-
-**One command to set it all up** (Node 20 + Docker + the app + your keys + firewall):
-```bash
-# 1. Create the free VM (Oracle "Always Free" shape), SSH in (user `ubuntu`).
-# 2. Run:
-curl -fsSL https://raw.githubusercontent.com/saistarayub-hash/stramingseparator/arena/01a0ba1a-stramingseparator/scripts/setup-vps.sh -o /tmp/sp-setup.sh
-bash /tmp/sp-setup.sh
-# → open http://<your-vm-ip>:8787
-```
-It stores your Appwrite/YouTube keys in `/opt/streampilot/.env` and starts the app with
-`docker compose` + `restart: unless-stopped` (survives reboots). The first build takes a few
-minutes; after that it's live 24/7 at no cost.
-
-> **Make it https + pretty for free:** run the second one-command script after the first:
-> ```bash
-> curl -fsSL https://raw.githubusercontent.com/saistarayub-hash/stramingseparator/arena/01a0ba1a-stramingseparator/scripts/setup-https.sh -o /tmp/sp-https.sh
-> bash /tmp/sp-https.sh
-> ```
-> It asks for your **DuckDNS subdomain + token**, installs **Caddy** (free auto-TLS), keeps DNS
-> refreshed, updates `APP_URL`, and restarts the app → `https://your-name.duckdns.org`.
-> Then set your Google OAuth redirect to `https://your-name.duckdns.org/auth/youtube/callback`.
-
-> **Is Oracle a pain to sign up for?** Honestly a little (card for verification, ARM
-> capacity can be scarce in some regions). If you hit a wall, a €3–4/mo VPS from Hetzner or
-> Racknerd is the next-cheapest always-on option — the exact same `setup-vps.sh` works.
 
 ---
 

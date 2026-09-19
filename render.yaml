@@ -12,6 +12,7 @@ services:
     name: streampilot
     runtime: docker
     plan: free
+    autoDeploy: false         # Button-deployed blueprints: don't redeploy on every repo push
     healthCheckPath: /api/status
     envVars:
       - key: PORT
