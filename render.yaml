@@ -1,5 +1,11 @@
 # Render.com blueprint — deploy StreamPilot with a few clicks:
 #   render.com → "New +" → "Blueprint" → point at this repo.
+#
+# NOTE — Render's FREE tier: sleeps after ~15 min idle (cold start ~1 min),
+# and free web services CANNOT attach a persistent disk. That's fine here
+# because Appwrite (see env vars below) holds the database + mirrored files.
+# For a fully free *never-sleeping* box with a real disk, use the Oracle
+# Always-Free VM + scripts/setup-vps.sh instead (see README → "Run free").
 
 services:
   - type: web
@@ -11,17 +17,17 @@ services:
       - key: PORT
         value: 8787
       - key: DATA_DIR
-        value: /app/data
+        value: /app/data         # ephemeral on the free tier — Appwrite is the durable store
       - key: APP_URL
-        sync: false          # set to your onrender.com URL after creation
+        sync: false              # set to your onrender.com URL after creation
       # --- YouTube (Google Cloud OAuth) ---
       - key: YOUTUBE_CLIENT_ID
         sync: false
       - key: YOUTUBE_CLIENT_SECRET
         sync: false
       - key: YOUTUBE_REDIRECT_URI
-        sync: false          # https://<your-app>.onrender.com/auth/youtube/callback
-      # --- Appwrite (cloud storage/db) — optional ---
+        sync: false              # https://<your-app>.onrender.com/auth/youtube/callback
+      # --- Appwrite (cloud storage/db) — keeps your library across deploys ---
       - key: APPWRITE_ENDPOINT
         value: https://nyc.cloud.appwrite.io/v1
       - key: APPWRITE_PROJECT_ID
@@ -31,7 +37,3 @@ services:
       # --- Whisper captions ---
       - key: SP_WHISPER_MODEL
         value: small
-    disk:
-      name: streampilot-data
-      mountPath: /app/data
-      sizeGB: 10

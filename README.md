@@ -168,17 +168,62 @@ docker compose up --build
 ```
 Videos + settings live in the `streampilot-data` volume, so they survive restarts.
 
-### Render (one-click cloud deploy)
+### Render (one-click, $0 but sleeps + no disk)
 1. Push this repo to GitHub.
 2. [render.com](https://render.com) → **New + → Blueprint** → pick your repo.
-3. `render.yaml` spins up the web service on the **Docker runtime** with a 10 GB persistent disk
-   at `/app/data`, plus health checks. Add your `YOUTUBE_*` env vars (and optionally
-   `APPWRITE_*`) in the Render dashboard.
-4. Set `APP_URL` to `https://<your-app>.onrender.com` and add that URL's OAuth redirect
+3. `render.yaml` spins up the web service on the **free tier** (750 hrs/mo, ~15-min
+   idle sleep). Add your `YOUTUBE_*` and `APPWRITE_*` env vars in the Render dashboard.
+4. Set `APP_URL` to `https://<your-app>.onrender.com` and add that OAuth redirect
    (`https://<your-app>.onrender.com/auth/youtube/callback`) in Google Cloud Console.
+
+> **Caveats on Render's free tier:** it can't attach a persistent disk, so connect
+> Appwrite (your durable store) and treat `/app/data` as scratch. For a genuinely
+> free *never-sleeping* server with a real 200 GB disk, use the Oracle path below.
 
 > **Fly.io / Railway / any VPS:** it's just `node server/index.js` — set `PORT`, `DATA_DIR`
 > (persistent disk), and `APP_URL`. A `Dockerfile` is included for containers.
+
+### 🆓 Run it free & always-on (the recommended way — zero $, never sleeps)
+
+The best **$0** host is an **Oracle Cloud Always Free** VM: up to 4 ARM cores + 24 GB RAM and
+a **200 GB permanent disk**, free forever, no idle spin-down. StreamPilot runs comfortably on
+the smallest free shape (1 OCPU / 6 GB or even a 1 GB AMD micro).
+
+| Option | $ | Sleeps? | Persistent disk? | Verdict |
+|---|---|---|---|---|
+| **Oracle Always Free VM** | $0 forever | ❌ never | ✅ 200 GB | ⭐ best for this app |
+| Render free web service | $0 | ✅ after ~15 min idle | ❌ none | quick demo only |
+| Fly.io free | $0 | ✅ on idle (VM stopped by default) | ⚠️ 3 GB paid volumes | trial-ish |
+
+**One command to set it all up** (Node 20 + Docker + the app + your keys + firewall):
+```bash
+# 1. Create the free VM (Oracle "Always Free" shape), SSH in (user `ubuntu`).
+# 2. Run:
+curl -fsSL https://raw.githubusercontent.com/saistarayub-hash/stramingseparator/arena/01a0ba1a-stramingseparator/scripts/setup-vps.sh -o /tmp/sp-setup.sh
+bash /tmp/sp-setup.sh
+# → open http://<your-vm-ip>:8787
+```
+It stores your Appwrite/YouTube keys in `/opt/streampilot/.env` and starts the app with
+`docker compose` + `restart: unless-stopped` (survives reboots). The first build takes a few
+minutes; after that it's live 24/7 at no cost.
+
+> **Make it https + pretty for free:**
+> 1. Grab a free DNS name from [DuckDNS](https://duckdns.org) (e.g. `mystream.duckdns.org`).
+> 2. Point it at your VM's public IP, open port **443** in the Oracle VCN security list.
+> 3. Run the reverse proxy (free, auto-TLS):
+>    ```bash
+>    apt-get install -y caddy
+>    # /etc/caddy/Caddyfile:
+>    #   mystream.duckdns.org { reverse_proxy 127.0.0.1:8787 }
+>    systemctl enable --now caddy
+>    ```
+> 4. Set `APP_URL=https://mystream.duckdns.org` (in `.env`) and add
+>    `https://mystream.duckdns.org/auth/youtube/callback` to your Google OAuth client —
+>    that's what makes the **YouTube Connect** button work on your public link.
+
+> **Is Oracle a pain to sign up for?** Honestly a little (card for verification, ARM
+> capacity can be scarce in some regions). If you hit a wall, a €3–4/mo VPS from Hetzner or
+> Racknerd is the next-cheapest always-on option — the exact same `setup-vps.sh` works.
 
 ---
 
