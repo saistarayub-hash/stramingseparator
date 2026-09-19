@@ -19,6 +19,7 @@
       <div class="nav-item" data-view="liveclips"><span class="ico">✂️</span> Live Clips</div>
       <div class="nav-item" data-view="publish"><span class="ico">📤</span> Publish</div>
       <div class="nav-item" data-view="autopilot"><span class="ico">🤖</span> Live Autopilot</div>
+      <div class="nav-item" data-view="connections"><span class="ico">🔗</span> Connections</div>
       <div class="nav-item" data-view="settings"><span class="ico">⚙️</span> Settings</div>
     </nav>
     <div class="cloud-pill" id="cloud-pill"><span class="led"></span><span id="cloud-pill-text">Cloud: local mode</span></div>
@@ -193,7 +194,7 @@
     <!-- AUTOPILOT -->
     <section class="view" id="view-autopilot">
       <h2 class="page-title">🤖 Live Autopilot</h2>
-      <p class="page-sub">Answer fans on YouTube Live + TikTok Live simultaneously — greetings, FAQs, and !clip commands, all automatic.</p>
+      <p class="page-sub">Answer fans on YouTube + TikTok + Twitch + Kick simultaneously — greetings, FAQs, and !clip commands, all automatic. (Link channels in <b>Connections</b> first.)</p>
 
       <div class="panel">
         <div class="status-line">
@@ -203,11 +204,15 @@
         <div class="row" style="margin-bottom:12px">
           <div class="field"><label>YouTube video/live ID</label><input class="input" id="ap-yt-id" placeholder="e.g. dQw4w9WgXcQ" /></div>
           <div class="field"><label>TikTok @username</label><input class="input" id="ap-tt-user" placeholder="yourchannel" /></div>
-          <button class="btn btn-primary" id="ap-run">▶ Start autopilot</button>
+          <div class="field"><label>Twitch channel</label><input class="input" id="ap-twitch-ch" placeholder="yourtwitch" /></div>
+          <div class="field"><label>Kick channel</label><input class="input" id="ap-kick-ch" placeholder="yourkick" /></div>
+          <button class="btn btn-primary" id="ap-run" style="align-self:flex-end">▶ Start autopilot</button>
         </div>
         <div class="row" style="color:var(--dim); font-size:12px; gap:20px">
           <span id="ap-youtube-state">YouTube: not connected</span>
           <span id="ap-tiktok-state">TikTok: not connected</span>
+          <span id="ap-twitch-state">Twitch: not connected</span>
+          <span id="ap-kick-state">Kick: not connected</span>
         </div>
       </div>
 
@@ -215,7 +220,12 @@
         <h3>Manual quick reply</h3>
         <div class="row">
           <div class="field"><input class="input" id="ap-say" placeholder="Type a message to send as the bot…" /></div>
-          <select class="input" id="ap-say-platform" style="max-width:130px"><option value="youtube">YouTube</option><option value="tiktok">TikTok</option></select>
+          <select class="input" id="ap-say-platform" style="max-width:130px">
+            <option value="youtube">YouTube</option>
+            <option value="tiktok">TikTok</option>
+            <option value="twitch">Twitch</option>
+            <option value="kick">Kick</option>
+          </select>
           <button class="btn" id="ap-say-btn">Send</button>
         </div>
       </div>
@@ -223,6 +233,25 @@
       <div class="panel">
         <h3>Activity feed</h3>
         <div class="feed" id="ap-feed"></div>
+      </div>
+    </section>
+
+    <!-- CONNECTIONS -->
+    <section class="view" id="view-connections">
+      <h2 class="page-title">🔗 Connections</h2>
+      <p class="page-sub">Link your channels once — then one click posts everywhere and one autopilot watches every chat.</p>
+
+      <div class="conn-grid" id="conn-grid"><!-- platform cards injected by JS --></div>
+
+      <div class="conn-detail" id="conn-detail"><!-- expand per-platform forms --></div>
+
+      <div class="panel">
+        <h3>✅ What you can connect</h3>
+        <div class="ghost-note">
+          <b>YouTube</b> — Google OAuth for uploads + live-chat autopilot · <b>TikTok</b> — live capture & chat from your phone (@username) ·
+          <b>Twitch</b> — channel chat via tmi.js (anonymous read works instantly; add a bot token to auto-reply) · <b>Kick</b> — channel chat read-only (Pusher) ·
+          <b>Coming next</b> — Instagram, X (Twitter), Discord, Facebook Gaming. Tell us which you want first!
+        </div>
       </div>
     </section>
 

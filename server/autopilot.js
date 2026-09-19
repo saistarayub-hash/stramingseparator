@@ -1,33 +1,44 @@
-// Live autopilot: watches YouTube Live chat + TikTok Live chat, runs the
-// reply brain, and sends replies. One instance at a time (single streamer).
+// Live autopilot: watches YouTube Live + TikTok + Twitch + Kick chat, runs
+// the reply brain, and sends replies. One instance at a time (single creator).
 
-import { getSettings, saveSettings } from './store.js';
+import { getSettings } from './store.js';
 import * as yt from './youtube.js';
 import * as tt from './tiktok.js';
+import * as twitch from './twitch.js';
+import * as kick from './kick.js';
 import { decide } from './brain.js';
-import { emit, hub } from './pubsub.js';
+import { emit } from './pubsub.js';
 import * as liveclip from './liveclip.js';
 
 let youtubeTimer = null;
 let youtubeState = null; // { liveChatId, pageToken, videoId, pollingIntervalMs }
 let tiktokActive = false;
+let twitchActive = false;
+let kickActive = false;
 let lastInfo = { replies: [] };
 
 const DOWNTIME_MS = 90_000; // wait before re-asking YouTube for liveChatId
 
 export function status() {
   return {
-    running: !!(youtubeTimer || tiktokActive),
+    running: !!(youtubeTimer || tiktokActive || twitchActive || kickActive),
     youtube: youtubeTimer ? { connected: true, videoId: youtubeState?.videoId, liveChatId: youtubeState?.liveChatId } : null,
-    tiktok: tiktokActive ? { connected: true, user: tt.currentUser() } : null,
+    tiktok: tiktokActive ? { connected: tt.isConnected(), user: tt.currentUser() } : null,
+    twitch: twitchActive ? { connected: twitch.isConnected(), channel: twitch.currentChannel() } : null,
+    kick: kickActive ? { connected: kick.isConnected(), channel: kick.currentChannel() } : null,
     lastInfo,
   };
 }
 
-export async function start({ youtubeVideoId, tiktokUser }) {
+export async function start({ youtubeVideoId, tiktokUser, twitchChannel, kickChannel }) {
   stop();
   lastInfo = { replies: [], startedAt: Date.now() };
-  const s = await getSettings();
+  const s = await getSettings().catch(() => ({}));
+
+  // Env fallbacks so a container/headless deploy can autostart chat watchers.
+  twitchChannel = twitchChannel || (s.twitch?.channel) || process.env.TWITCH_CHANNEL || null;
+  kickChannel = kickChannel || (s.kick?.channel) || process.env.KICK_CHANNEL || null;
+  tiktokUser = tiktokUser || s.tiktokChannel || null;
 
   if (youtubeVideoId) {
     youtubeState = { videoId: youtubeVideoId, liveChatId: null, pageToken: null, pollingIntervalMs: 5000 };
@@ -38,7 +49,7 @@ export async function start({ youtubeVideoId, tiktokUser }) {
   if (tiktokUser) {
     tiktokActive = true;
     emit('log', { level: 'info', msg: `Connecting TikTok Live @${tiktokUser} …` });
-    tt.bus.on('message', onTikTokMessage);
+    tt.bus.on('message', onOtherChat);
     tt.connect(tiktokUser, { onEvent: (type, payload) => {
       if (type === 'connected') emit('log', { level: 'info', msg: 'TikTok Live connected ✅' });
       if (type === 'disconnected') emit('log', { level: 'warn', msg: 'TikTok Live disconnected.' });
@@ -49,16 +60,34 @@ export async function start({ youtubeVideoId, tiktokUser }) {
       emit('log', { level: 'error', msg: 'TikTok connect failed: ' + err.message });
     });
   }
+
+  if (twitchChannel) {
+    twitchActive = true;
+    emit('log', { level: 'info', msg: `Connecting Twitch #${twitchChannel} …` });
+    twitch.bus.on('message', onOtherChat);
+    twitch.connect(twitchChannel).catch((err) => {
+      twitchActive = false;
+      emit('log', { level: 'error', msg: 'Twitch connect failed: ' + err.message });
+    });
+  }
+
+  if (kickChannel) {
+    kickActive = true;
+    emit('log', { level: 'info', msg: `Connecting Kick @${kickChannel} …` });
+    kick.bus.on('message', onOtherChat);
+    kick.connect(kickChannel).catch((err) => {
+      kickActive = false;
+      emit('log', { level: 'error', msg: 'Kick connect failed: ' + err.message });
+    });
+  }
 }
 
 export function stop() {
   if (youtubeTimer) { clearTimeout(youtubeTimer); youtubeTimer = null; }
   youtubeState = null;
-  if (tiktokActive) {
-    tt.bus.off('message', onTikTokMessage);
-    tt.disconnect();
-    tiktokActive = false;
-  }
+  if (tiktokActive) { tt.bus.off('message', onOtherChat); tt.disconnect(); tiktokActive = false; }
+  if (twitchActive) { twitch.bus.off('message', onOtherChat); twitch.disconnect(); twitchActive = false; }
+  if (kickActive) { kick.bus.off('message', onOtherChat); kick.disconnect(); kickActive = false; }
   lastInfo = { ...lastInfo, startedAt: null };
 }
 
@@ -116,13 +145,15 @@ async function ensureYoutubeChat() {
   }
 }
 
-async function onTikTokMessage(msg) {
-  if (!msg || !msg.text || msg.kind !== 'chat') return;
-  await handleInbound({ platform: 'tiktok', author: msg.author, text: msg.text, at: Date.now() });
+async function onOtherChat(msg) {
+  if (!msg || msg.kind !== 'chat') return;
+  await handleInbound(msg);
 }
 
 async function handleInbound(msg) {
-  emit('chat', msg);
+  // Twitch/TikTok/Kick already emit 'chat' via the central bus wiring; YouTube
+  // has no bus, so publish it here to keep the UI live feed uniform.
+  if (msg.platform === 'youtube') emit('chat', msg);
 
   // Auto-clip trigger: !clip anywhere in chat → cut from live buffer.
   const s0 = await getSettings().catch(() => ({}));
@@ -133,8 +164,14 @@ async function handleInbound(msg) {
       // still send the confirmation reply from the brain
       const decision = await decide(msg).catch(() => null);
       if (decision?.reply) {
-        if (msg.platform === 'youtube' && youtubeState?.liveChatId) {
-          yt.postLiveChat(youtubeState.liveChatId, decision.reply).catch(() => {});
+        try {
+          if (msg.platform === 'youtube') {
+            if (youtubeState?.liveChatId) await yt.postLiveChat(youtubeState.liveChatId, decision.reply);
+          } else if (msg.platform === 'tiktok') await tt.sendReply(decision.reply);
+          else if (msg.platform === 'twitch') await twitch.sendReply(decision.reply);
+          else if (msg.platform === 'kick') await kick.sendReply(decision.reply);
+        } catch (e) {
+          emit('log', { level: 'warn', msg: `Clip confirmation failed (${msg.platform}): ${e.message}` });
         }
       }
       return;
@@ -159,6 +196,10 @@ async function handleInbound(msg) {
       }
     } else if (msg.platform === 'tiktok') {
       entry.sent = await tt.sendReply(decision.reply);
+    } else if (msg.platform === 'twitch') {
+      entry.sent = await twitch.sendReply(decision.reply);
+    } else if (msg.platform === 'kick') {
+      entry.sent = await kick.sendReply(decision.reply);
     }
   } catch (e) {
     entry.error = e.message;

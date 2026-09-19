@@ -17,12 +17,15 @@ import { isConfigured, appwriteConfig, DEFAULT_ENDPOINT } from './appwrite.js';
 import * as yt from './youtube.js';
 import * as autopilot from './autopilot.js';
 import * as liveclip from './liveclip.js';
+import * as twitch from './twitch.js';
+import * as kick from './kick.js';
+import * as connections from './connections.js';
 import { emit } from './pubsub.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const OUTPUT_DIR = path.join(DATA_DIR, 'outputs');
 
@@ -518,6 +521,11 @@ app.post('/api/cloud/disconnect', (_req, res) => {
 // ------------------------------------------------------------------- settings
 app.get('/api/settings', (_req, res) => sc(res, getSettings().then((s) => {
   const { youtubeToken, ...safe } = s;
+  // Never send Twitch secrets to the browser.
+  if (safe.twitch) {
+    const { botOauth, appToken, clientId, ...twPublic } = safe.twitch;
+    safe.twitch = { ...twPublic, hasBotOauth: !!botOauth, hasAppToken: !!appToken, hasClientId: !!clientId };
+  }
   return { ...safe, youtubeToken: !!youtubeToken };
 })));
 app.post('/api/settings', async (req, res) => {
@@ -555,7 +563,12 @@ app.get('/auth/youtube/callback', async (req, res) => {
 app.get('/api/autopilot/status', (_req, res) => res.json(autopilot.status()));
 app.post('/api/autopilot/start', async (req, res) => {
   try {
-    await autopilot.start({ youtubeVideoId: req.body.youtubeVideoId, tiktokUser: req.body.tiktokUser });
+    await autopilot.start({
+      youtubeVideoId: req.body.youtubeVideoId,
+      tiktokUser: req.body.tiktokUser,
+      twitchChannel: req.body.twitchChannel,
+      kickChannel: req.body.kickChannel,
+    });
     res.json({ ok: true, status: autopilot.status() });
   } catch (e) {
     res.status(400).json({ error: e.message });
@@ -573,13 +586,74 @@ app.post('/api/autopilot/say', async (req, res) => {
       const st = autopilot.status();
       if (!st.youtube?.liveChatId) throw new Error('YouTube chat not connected.');
       await yt.postLiveChat(st.youtube.liveChatId, text);
-    } else if (platform === 'tiktok') {
-      // fall back to overlay in UI if not deliverable
-      emit('reply', { at: Date.now(), platform: 'tiktok', user: 'You', in: '(manual)', out: text, sent: false, manual: true });
-      return res.json({ ok: true, delivered: false, note: 'TikTok send not available; shown as your manual reply.' });
-    } else throw new Error('Unknown platform');
-    emit('reply', { at: Date.now(), platform, user: 'You', in: '(manual)', out: text, sent: true, manual: true });
-    res.json({ ok: true, delivered: true });
+      emit('reply', { at: Date.now(), platform, user: 'You', in: '(manual)', out: text, sent: true, manual: true });
+      return res.json({ ok: true, delivered: true });
+    }
+    // Everything non-YouTube goes through its platform's sendReply
+    const mod = { tiktok: await import('./tiktok.js'), twitch, kick }[platform];
+    if (!mod) throw new Error('Unknown platform');
+    const sent = await mod.sendReply(text);
+    emit('reply', { at: Date.now(), platform, user: 'You', in: '(manual)', out: text, sent, manual: true });
+    return res.json({ ok: true, delivered: sent, note: sent ? undefined : 'Read-only connection — reply shown locally.' });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// ------------------------------------------------------------------- connections hub
+app.get('/api/connections', async (_req, res) => {
+  try {
+    const ytAccount = await connections.youtubeAccount();
+    const snap = await connections.snapshot(autopilot.status());
+    const platforms = await Promise.all(snap.platforms.map(async (p) => {
+      if (p.id === 'youtube') return { ...p, account: ytAccount ? { id: ytAccount.id, title: ytAccount.title, subs: ytAccount.subs } : null };
+      return p;
+    }));
+    res.json({ platforms, live: snap.live, running: autopilot.status().running });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Twitch
+app.post('/api/connections/twitch', async (req, res) => {
+  try {
+    const saved = await twitch.saveTwitch(req.body || {});
+    res.json({ ok: true, twitch: { channel: saved.channel, botUser: saved.botUser, hasBotOauth: !!saved.botOauth, hasAppToken: !!saved.appToken } });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post('/api/connections/twitch/validate', async (req, res) => {
+  try {
+    const token = req.body?.token || '';
+    const out = await twitch.validateTwitchToken(token, req.body?.clientId);
+    res.json(out);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Kick
+app.post('/api/connections/kick', async (req, res) => {
+  try {
+    const s0 = await getSettings();
+    await saveSettings({ kick: { ...(s0.kick || {}), channel: String(req.body?.channel || '').trim().replace(/^@/, '') } });
+    res.json({ ok: true, kick: (await getSettings()).kick });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Quick chat test (connect-only) for twitch/kick from the Connections tab
+app.post('/api/connections/chat/test', async (req, res) => {
+  try {
+    const { platform, channel } = req.body || {};
+    if (platform === 'twitch') await twitch.connect(channel);
+    else if (platform === 'kick') await kick.connect(channel);
+    else if (platform === 'tiktok') { await (await import('./tiktok.js')).connect(channel); }
+    else throw new Error('Unsupported platform for chat test.');
+    res.json({ ok: true, connected: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -622,6 +696,7 @@ function runAsync(fn) {
 const PORT = Number(process.env.PORT) || 8787;
 
 async function boot() {
+  connections.wireChatBuses();
   const cloudInfo = await initStore();
   app.listen(PORT, '0.0.0.0', () => {
     console.log('');

@@ -9,7 +9,10 @@ import crypto from 'node:crypto';
 import * as aw from './appwrite.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '..', 'data');
+// DATA_DIR can be overridden (Docker/cloud volumes keep state somewhere durable).
+const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'store.json');
 const APPWRITE_CREDS_PATH = path.join(DATA_DIR, 'appwrite.json');
 

@@ -31,7 +31,9 @@ let client = null;
 let sdk = null;
 
 // Creds file lives next to the local store (data/appwrite.json).
-const CREDS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'appwrite.json');
+const CREDS_PATH = process.env.DATA_DIR
+  ? path.join(path.resolve(process.env.DATA_DIR), 'appwrite.json')
+  : path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'appwrite.json');
 
 function readCredsFile() {
   try { return JSON.parse(fs.readFileSync(CREDS_PATH, 'utf8')); }

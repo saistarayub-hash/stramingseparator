@@ -1,0 +1,37 @@
+# Render.com blueprint — deploy StreamPilot with a few clicks:
+#   render.com → "New +" → "Blueprint" → point at this repo.
+
+services:
+  - type: web
+    name: streampilot
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/status
+    envVars:
+      - key: PORT
+        value: 8787
+      - key: DATA_DIR
+        value: /app/data
+      - key: APP_URL
+        sync: false          # set to your onrender.com URL after creation
+      # --- YouTube (Google Cloud OAuth) ---
+      - key: YOUTUBE_CLIENT_ID
+        sync: false
+      - key: YOUTUBE_CLIENT_SECRET
+        sync: false
+      - key: YOUTUBE_REDIRECT_URI
+        sync: false          # https://<your-app>.onrender.com/auth/youtube/callback
+      # --- Appwrite (cloud storage/db) — optional ---
+      - key: APPWRITE_ENDPOINT
+        value: https://nyc.cloud.appwrite.io/v1
+      - key: APPWRITE_PROJECT_ID
+        sync: false
+      - key: APPWRITE_API_KEY
+        sync: false
+      # --- Whisper captions ---
+      - key: SP_WHISPER_MODEL
+        value: small
+    disk:
+      name: streampilot-data
+      mountPath: /app/data
+      sizeGB: 10

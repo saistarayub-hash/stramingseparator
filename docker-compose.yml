@@ -1,0 +1,32 @@
+version: "3.9"
+
+# StreamPilot — run anywhere with `docker compose up`.
+# State persists in a named volume (videos + settings survive restarts).
+
+services:
+  streampilot:
+    build: .
+    image: streampilot:latest
+    container_name: streampilot
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8787}:8787"
+    env_file:
+      - .env   # optional: put YOUTUBE_*, APPWRITE_*, SP_WHISPER_MODEL here
+    environment:
+      PORT: 8787
+      # Where videos/settings live. Mounted volume below.
+      DATA_DIR: /app/data
+      # Public URL where this app is reachable (used for OAuth redirects, etc.)
+      APP_URL: ${APP_URL:-http://localhost:8787}
+    volumes:
+      - streampilot-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8787/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  streampilot-data:

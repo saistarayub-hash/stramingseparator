@@ -57,7 +57,7 @@ const api = {
 };
 
 /* ------------------------------------------------------------------ views */
-const views = ['library', 'liveclips', 'autopilot', 'publish', 'settings'];
+const views = ['library', 'liveclips', 'autopilot', 'connections', 'publish', 'settings'];
 function showView(name) {
   views.forEach((v) => {
     $('#view-' + v)?.classList.toggle('active', v === name);
@@ -66,6 +66,7 @@ function showView(name) {
   if (name === 'library') refreshVideos();
   if (name === 'liveclips') refreshLiveClip();
   if (name === 'autopilot') refreshAutopilot();
+  if (name === 'connections') refreshConnections();
   if (name === 'publish') refreshPublish();
   if (name === 'settings') { refreshSettings(); refreshCloud(); }
 }
@@ -660,10 +661,12 @@ function renderAutopilot() {
   const runBtn = $('#ap-run');
   runBtn.textContent = st.running ? '■ Stop autopilot' : '▶ Start autopilot';
   $('#ap-status').textContent = st.running
-    ? '🟢 Autopilot live — watching chats and replying'
+    ? '🟢 Autopilot live — watching all chats and replying'
     : '⏸ Autopilot off';
-  $('#ap-youtube-state').textContent = st.youtube?.connected ? `YouTube chat attached (${st.youtube.liveChatId ? '✓' : 'waiting for live…'})` : 'Not connected';
-  $('#ap-tiktok-state').textContent = st.tiktok?.connected ? `TikTok Live @${st.tiktok.user}` : 'Not connected';
+  $('#ap-youtube-state').textContent = st.youtube?.connected ? `YouTube: ✓ (${st.youtube.liveChatId ? 'chat attached' : 'waiting for live…'})` : 'YouTube: not connected';
+  $('#ap-tiktok-state').textContent = st.tiktok?.connected ? `TikTok: ✓ @${st.tiktok.user}` : 'TikTok: not connected';
+  $('#ap-twitch-state').textContent = st.twitch?.connected ? `Twitch: ✓ #${st.twitch.channel}` : 'Twitch: not connected';
+  $('#ap-kick-state').textContent = st.kick?.connected ? `Kick: ✓ @${st.kick.channel}` : 'Kick: not connected';
 }
 
 $('#ap-run')?.addEventListener('click', async () => {
@@ -673,10 +676,15 @@ $('#ap-run')?.addEventListener('click', async () => {
   } else {
     const youtubeVideoId = $('#ap-yt-id').value.trim();
     const tiktokUser = $('#ap-tt-user').value.trim();
-    if (!youtubeVideoId && !tiktokUser) { toast('Enter a YouTube video/live ID or a TikTok username.', 'error'); return; }
+    const twitchChannel = $('#ap-twitch-ch').value.trim();
+    const kickChannel = $('#ap-kick-ch').value.trim();
+    if (!youtubeVideoId && !tiktokUser && !twitchChannel && !kickChannel) {
+      toast('Enter at least one: YouTube video ID, TikTok @username, Twitch channel, or Kick channel.', 'error');
+      return;
+    }
     setBusy($('#ap-run'), true, 'Starting…');
     try {
-      await api.post('/api/autopilot/start', { youtubeVideoId, tiktokUser });
+      await api.post('/api/autopilot/start', { youtubeVideoId, tiktokUser, twitchChannel, kickChannel });
       toast('Autopilot started!');
     } catch (e) {
       toast('Could not start: ' + e.message, 'error');
@@ -688,8 +696,9 @@ $('#ap-run')?.addEventListener('click', async () => {
 });
 
 function pushChat(m) {
+  if (!m) return;
   state.chatMessages.unshift(m);
-  state.chatMessages = state.chatMessages.slice(0, 100);
+  state.chatMessages = state.chatMessages.slice(0, 200);
   renderChatFeed();
 }
 
@@ -705,11 +714,22 @@ function pushLog(l) {
 
 function renderChatFeed() {
   const feed = $('#ap-feed');
-  const items = [...state.logs].slice(0, 60);
-  feed.innerHTML = items.length ? items.map((l) => `
-    <div class="feed-line feed-${l.level || 'info'}">
-      <span class="feed-time">${fmt.clock(l.at)}</span> ${esc(l.msg)}
-    </div>`).join('') : '<div class="feed-empty">Autopilot activity will appear here. Start it up! 🚀</div>';
+  if (!feed) return;
+  // Merge chat messages + logs into one timeline (chat is what fans actually said).
+  const entries = [
+    ...state.chatMessages.map((m) => ({ at: m.at, kind: 'chat', m })),
+    ...state.logs.map((l) => ({ at: l.at || Date.now(), kind: 'log', l })),
+  ].sort((a, b) => b.at - a.at).slice(0, 80);
+  feed.innerHTML = entries.length ? entries.map((e) => {
+    if (e.kind === 'chat') {
+      const m = e.m;
+      const platIcon = { youtube: '▶️', tiktok: '🎵', twitch: '👾', kick: '🥋' }[m.platform] || '💬';
+      const who = m.kind === 'self' ? '🤖 you (draft)' : esc(m.author || m.userId || 'Viewer');
+      return `<div class="feed-line feed-chat"><span class="feed-time">${fmt.clock(e.at)}</span> ${platIcon} <b>${who}</b>: ${esc(m.text)}</div>`;
+    }
+    const l = e.l;
+    return `<div class="feed-line feed-${l.level || 'info'}"><span class="feed-time">${fmt.clock(e.at)}</span> ${esc(l.msg)}</div>`;
+  }).join('') : '<div class="feed-empty">Autopilot activity will appear here. Start it up! 🚀</div>';
   feed.scrollTop = 0;
 }
 
@@ -725,6 +745,188 @@ $('#ap-say-btn')?.addEventListener('click', async () => {
     toast('Send failed: ' + e.message, 'error');
   }
 });
+
+/* ------------------------------------------------------------------ connections hub */
+const stateConn = { platforms: [], live: {}, selected: null };
+
+async function refreshConnections() {
+  try {
+    const d = await api.get('/api/connections');
+    stateConn.platforms = d.platforms || [];
+    stateConn.live = d.live || {};
+    renderConnections();
+  } catch (e) {
+    toast('Could not load connections: ' + e.message, 'error');
+  }
+}
+
+const PLATFORM_META = {
+  youtube: { logo: '▶️', cls: 'yt', name: 'YouTube' },
+  tiktok: { logo: '🎵', cls: 'tt', name: 'TikTok' },
+  twitch: { logo: '👾', cls: 'tw', name: 'Twitch' },
+  kick: { logo: '🥋', cls: 'kick', name: 'Kick' },
+};
+
+function renderConnections() {
+  const grid = $('#conn-grid');
+  if (!grid) return;
+  grid.innerHTML = stateConn.platforms.map((p) => {
+    const meta = PLATFORM_META[p.id] || { logo: '🔌', cls: '', name: p.name };
+    const live = stateConn.live[p.id];
+    const liveLabel = live
+      ? (typeof live === 'string' ? `· chatting in ${live}` : '· chat live')
+      : '';
+    return `
+    <div class="conn-card ${p.connected ? 'connected' : ''} ${stateConn.selected === p.id ? 'selected' : ''}" data-platform="${p.id}">
+      <div class="conn-logo ${meta.cls}">${meta.logo}</div>
+      <h4>${meta.name}</h4>
+      <div class="conn-desc">${esc(p.name + ' · ' + p.keyHint || '')}</div>
+      <div class="conn-status">
+        <span class="dot ${p.connected ? '' : 'off'}"></span>
+        ${p.connected
+          ? `<span class="conn-account">${p.account ? esc(String(p.account)) : 'Linked'} ${liveLabel}</span>`
+          : '<span style="color:var(--dim)">Not linked</span>'}
+      </div>
+    </div>`;
+  }).join('');
+  $$('.conn-card').forEach((c) => c.addEventListener('click', () => {
+    stateConn.selected = c.dataset.platform;
+    renderConnections();
+    renderConnDetail();
+  }));
+  if (stateConn.selected) renderConnDetail();
+}
+
+function fieldRow(label, inputHtml) {
+  return `<div class="field"><label>${label}</label>${inputHtml}</div>`;
+}
+
+function renderConnDetail() {
+  const box = $('#conn-detail');
+  if (!box) return;
+  const id = stateConn.selected;
+  const p = stateConn.platforms.find((x) => x.id === id);
+  if (!p) { box.classList.remove('open'); box.innerHTML = ''; return; }
+  box.classList.add('open');
+
+  if (id === 'youtube') {
+    box.innerHTML = `
+      <h3>▶️ YouTube</h3>
+      ${p.connected
+        ? `<div class="yt-connected"><span class="dot"></span> Connected as <b>${esc(p.account?.title || 'your channel')}</b> (${p.account?.subs != null ? Number(p.account.subs).toLocaleString() + ' subs' : ''})</div>`
+        : ''}
+      <div class="conn-field-row">
+        <button class="btn btn-primary" id="conn-yt-btn">🔴 ${p.connected ? 'Re-connect YouTube channel' : 'Connect with Google'}</button>
+        <a class="btn btn-ghost" href="https://console.cloud.google.com/apis/credentials" target="_blank">Get YouTube API key ↗</a>
+      </div>
+      <div class="hint">Uploads + live-chat replying. Uses your own Google OAuth so there are no API fees.</div>`;
+    $('#conn-yt-btn')?.addEventListener('click', async () => {
+      const { url } = await api.get('/api/youtube/auth-url');
+      window.location.href = url;
+    });
+    return;
+  }
+
+  if (id === 'tiktok') {
+    box.innerHTML = `
+      <h3>🎵 TikTok</h3>
+      <div class="hint" style="margin:0 0 6px">TikTok live capture + chat works without OAuth — just your @username. Auto-posting clips comes next via phone pairing.</div>
+      <div class="conn-mini-form">
+        <div class="field"><label>TikTok @username</label><input class="input" id="conn-tt-user" placeholder="yourchannel" value="${esc(p.account || '')}" /></div>
+        <div class="conn-field-row">
+          <button class="btn btn-primary" id="conn-tt-save">💾 Save</button>
+          <button class="btn" id="conn-tt-test">👀 Test live chat</button>
+        </div>
+      </div>`;
+    $('#conn-tt-save')?.addEventListener('click', async () => {
+      const v = $('#conn-tt-user').value.trim();
+      await api.post('/api/settings', { tiktokChannel: v.replace(/^@/, '') });
+      toast('TikTok channel saved ✅');
+      refreshConnections();
+    });
+    $('#conn-tt-test')?.addEventListener('click', async () => {
+      const v = $('#conn-tt-user').value.trim();
+      if (!v) { toast('Enter a @username first.', 'error'); return; }
+      try { await api.post('/api/connections/chat/test', { platform: 'tiktok', channel: v }); toast('✅ TikTok chat connected!'); }
+      catch (e) { toast('TikTok test failed: ' + e.message, 'error'); }
+    });
+    return;
+  }
+
+  if (id === 'twitch') {
+    box.innerHTML = `
+      <h3>👾 Twitch</h3>
+      <div class="hint" style="margin:0 0 12px">Read chat from any public channel with <b>zero keys</b>. Add a bot account + OAuth to let the autopilot reply, and an App token to enable Helix-looking-up.</div>
+      <div class="conn-mini-form">
+        ${fieldRow('Channel to watch', `<input class="input" id="conn-tw-channel" placeholder="yourtwitch" />`)}
+        ${fieldRow('Bot username (optional, for replies)', `<input class="input" id="conn-tw-botuser" placeholder="my_bot_account" />`)}
+        ${fieldRow('Bot OAuth token (oauth:…)', `<input class="input" id="conn-tw-botoauth" type="password" placeholder="oauth:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />`)}
+        ${fieldRow('Client ID (optional)', `<input class="input" id="conn-tw-clientid" placeholder="your twitch app client id" />`)}
+        ${fieldRow('App access token (optional)', `<input class="input" id="conn-tw-apptoken" type="password" placeholder="app access token" />`)}
+        <div class="conn-field-row">
+          <button class="btn btn-primary" id="conn-tw-save">💾 Save Twitch</button>
+          <button class="btn" id="conn-tw-test">👀 Test read (watches chat)</button>
+        </div>
+        <div class="ghost-note">
+          Get your bot OAuth at <a href="https://twitchtokengenerator.com" target="_blank">twitchtokengenerator.com</a> (scope <b>chat:read chat:edit</b>).
+          Leave bot fields blank to start read-only in seconds.
+        </div>
+      </div>`;
+    // prefill from current settings
+    const tw = p.twitch || {};
+    if (tw.channel) $('#conn-tw-channel').value = tw.channel;
+    if (tw.botUser) $('#conn-tw-botuser').value = tw.botUser;
+    $('#conn-tw-save')?.addEventListener('click', async () => {
+      const body = {
+        channel: $('#conn-tw-channel').value.trim(),
+        botUser: $('#conn-tw-botuser').value.trim() || null,
+        botOauth: $('#conn-tw-botoauth').value.trim() || null,
+        clientId: $('#conn-tw-clientid').value.trim() || null,
+        appToken: $('#conn-tw-apptoken').value.trim() || null,
+      };
+      if (!body.channel) { toast('Enter a channel name.', 'error'); return; }
+      try {
+        await api.post('/api/connections/twitch', body);
+        $('#conn-tw-botoauth').value = ''; $('#conn-tw-apptoken').value = '';
+        toast('Twitch saved ✅');
+        refreshConnections();
+      } catch (e) { toast('Save failed: ' + e.message, 'error'); }
+    });
+    $('#conn-tw-test')?.addEventListener('click', async () => {
+      const ch = $('#conn-tw-channel').value.trim();
+      if (!ch) { toast('Enter a channel to watch.', 'error'); return; }
+      try { await api.post('/api/connections/chat/test', { platform: 'twitch', channel: ch }); toast(`✅ Watching Twitch #${ch} — messages appear in the Live Autopilot feed.`); }
+      catch (e) { toast('Twitch test failed: ' + e.message, 'error'); }
+    });
+    return;
+  }
+
+  if (id === 'kick') {
+    box.innerHTML = `
+      <h3>🥋 Kick</h3>
+      <div class="hint" style="margin:0 0 12px">Read any Kick channel's chat in real time (Pusher websocket). Sending replies needs a logged-in session, so it's read-only for now — the autopilot drafts replies you can hit.</div>
+      <div class="conn-mini-form">
+        <div class="field"><label>Kick channel</label><input class="input" id="conn-kick-user" placeholder="yourkick" value="${esc(p.account || '')}" /></div>
+        <div class="conn-field-row">
+          <button class="btn btn-primary" id="conn-kick-save">💾 Save</button>
+          <button class="btn" id="conn-kick-test">👀 Test read</button>
+        </div>
+      </div>`;
+    $('#conn-kick-save')?.addEventListener('click', async () => {
+      const v = $('#conn-kick-user').value.trim();
+      if (!v) { toast('Enter a channel name.', 'error'); return; }
+      try { await api.post('/api/connections/kick', { channel: v }); toast('Kick channel saved ✅'); refreshConnections(); }
+      catch (e) { toast('Save failed: ' + e.message, 'error'); }
+    });
+    $('#conn-kick-test')?.addEventListener('click', async () => {
+      const v = $('#conn-kick-user').value.trim();
+      if (!v) { toast('Enter a channel name.', 'error'); return; }
+      try { await api.post('/api/connections/chat/test', { platform: 'kick', channel: v }); toast(`✅ Reading Kick @${v} — messages appear in the Live Autopilot feed.`); }
+      catch (e) { toast('Kick test failed: ' + e.message, 'error'); }
+    });
+    return;
+  }
+}
 
 /* ------------------------------------------------------------------ publish */
 async function refreshPublish() {

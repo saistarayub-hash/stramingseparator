@@ -7,8 +7,9 @@ gameplay, drop it in, and it:
 2. **Auto-fixes** it for broadcast/web — H.264 faststart, loudness-normalized to -14 LUFS
 3. **Cuts vertical clips** (1080×1920) from the best moments for TikTok/Shorts
 4. **Publishes** the long video to **YouTube** (OAuth, resumable upload) from one button
-5. **Runs your live chat** on **YouTube Live + TikTok Live** simultaneously — greeting fans,
-   answering FAQs, and reacting to `!clip` — all automatic, with a manual override.
+5. **Runs your live chat** on **YouTube + TikTok + Twitch + Kick** simultaneously (link them all
+   once in **Connections**) — greeting fans, answering FAQs, and reacting to `!clip` — all
+   automatic, with a manual override.
 6. **Clips your live stream into Shorts/TikToks mid-game** — record a live source (YouTube Live,
    HLS, **TikTok from your phone**, or your **PS5 via remote play — no capture card**) into a
    rolling buffer, then hit one button to turn the last 10–60 seconds into a titled, vertical clip.
@@ -76,15 +77,32 @@ YouTube Shorts, or Reels.
   Developers). Until then, the app cuts & names your clips and sets you up so the moment you're
   approved it's one click. *(Roadmap below covers auto-upload via your phone.)*
 
-### 5. Live Autopilot
-Start it with a **YouTube video/live ID** and/or a **TikTok @username**. It:
+### 5. Connections 🔗 — link all your accounts
+The **Connections** tab is your account hub. Link each platform once, and both the **Publish**
+matrix and the **Live Autopilot** pick them up automatically:
+
+| Platform | What it unlocks | Needs |
+|---|---|---|
+| **YouTube** | uploads + live-chat autopilot | Google OAuth (free) |
+| **TikTok** | live capture + live chat | your @username (no key) |
+| **Twitch** | live chat reading & auto-replies | channel name (read-only works with zero keys; add a bot token to reply) |
+| **Kick** | live chat reading (real time, Pusher) | channel name (read-only) |
+
+*Coming next:* Instagram, X/Twitter, Discord, Facebook Gaming — tell us which you want first!
+
+### 6. Live Autopilot
+Start it with any mix of a **YouTube video/live ID**, **TikTok @username**, **Twitch channel**,
+and/or **Kick channel**. It:
 - attaches to YouTube live chat (via Data API) and polls in real time
 - listens to TikTok live chat (via TikTokLive connector)
+- reads Twitch chat via tmi.js (anonymous read, or your bot for replies)
+- reads Kick chat via its Pusher websocket (read-only for now)
 - runs every message through the brain: greetings, "what game?", GG/win, schedule, donation,
   socials, `!clip`, plus your custom FAQs (Settings)
-- replies on both platforms; you can also send manual replies as the bot
+- replies wherever it can (YouTube + TikTok + Twitch with a bot token); you can also send
+  manual replies as the bot on any platform
 
-### 6. Live Clips (Shorts/TikTok mid-stream) ✂️
+### 7. Live Clips (Shorts/TikTok mid-stream) ✂️
 The **Live Clips** tab records a live source into a rolling ~30s buffer and lets you cut the
 moment *as it happens* — no waiting for the VOD, no re-encoding of the whole stream.
 
@@ -115,7 +133,7 @@ clip buffer — so you can cut TikTok clips while streaming from your phone.
 > keep the recording machine wired — clipping is instant either way, but clean local playback
 > gives a smoother buffer.
 
-### 7. Auto-edit + auto-copy ✨
+### 8. Auto-edit + auto-copy ✨
 Every clip/VOD can now be **fully auto-produced** — no manual writing:
 
 - **✂️ Auto-clip from chat:** with Live Autopilot running, anyone typing `!clip` (or
@@ -138,22 +156,58 @@ captions are simply skipped and the clip is cut without them.
 
 ---
 
+## 🚀 Run it almost anywhere
+
+StreamPilot is a single Node service, so it runs anywhere Node runs. Here's the fast path.
+
+### Docker (any machine with Docker)
+```bash
+cp .env.example .env      # then fill in your YOUTUBE_* keys (optional)
+docker compose up --build
+# → open http://localhost:8787
+```
+Videos + settings live in the `streampilot-data` volume, so they survive restarts.
+
+### Render (one-click cloud deploy)
+1. Push this repo to GitHub.
+2. [render.com](https://render.com) → **New + → Blueprint** → pick your repo.
+3. `render.yaml` spins up the web service on the **Docker runtime** with a 10 GB persistent disk
+   at `/app/data`, plus health checks. Add your `YOUTUBE_*` env vars (and optionally
+   `APPWRITE_*`) in the Render dashboard.
+4. Set `APP_URL` to `https://<your-app>.onrender.com` and add that URL's OAuth redirect
+   (`https://<your-app>.onrender.com/auth/youtube/callback`) in Google Cloud Console.
+
+> **Fly.io / Railway / any VPS:** it's just `node server/index.js` — set `PORT`, `DATA_DIR`
+> (persistent disk), and `APP_URL`. A `Dockerfile` is included for containers.
+
+---
+
 ## Configuration
 
 Copy `.env.example` to `.env` and fill in what you use:
 
 ```bash
-# Optional — cloud persistence + user auth
-SUPABASE_URL=
-SUPABASE_ANON_KEY=
+# Optional — cloud persistence + database (Appwrite)
+APPWRITE_ENDPOINT=https://nyc.cloud.appwrite.io/v1
+APPWRITE_PROJECT_ID=
+APPWRITE_API_KEY=
 
 # YouTube upload + live chat (Google Cloud Console)
 YOUTUBE_CLIENT_ID=
 YOUTUBE_CLIENT_SECRET=
 YOUTUBE_REDIRECT_URI=http://localhost:8787/auth/youtube/callback
 
+# Twitch chat (optional — read works with no keys)
+TWITCH_CHANNEL=
+TWITCH_BOT_USER=
+TWITCH_BOT_OAUTH=
+
+# Kick chat (read-only, no key)
+KICK_CHANNEL=
+
 PORT=8787
 SESSION_SECRET=change-me-to-a-long-random-string
+APP_URL=http://localhost:8787
 ```
 
 ### Connecting YouTube (5 min)
@@ -183,8 +237,11 @@ server/
   ffmpeg.js     FFmpeg/FFprobe wrappers: probe, fix, loudness, highlights, clip, render
   youtube.js    YouTube OAuth + resumable uploads + live chat polling
   tiktok.js     TikTok Live connector wrapper (community lib)
+  twitch.js     Twitch chat connector (tmi.js — anonymous read + bot replies)
+  kick.js       Kick chat connector (dependency-free Pusher websocket, read-only)
+  connections.js Connection hub: aggregates all platforms for UI + autopilot
   brain.js      Reply brain: intents, FAQs, templated replies
-  autopilot.js  Orchestrates both platforms + brain + sending replies
+  autopilot.js  Orchestrates all platforms + brain + sending replies
   liveclip.js   Live recorder (rolling buffer) + clip/cut engine + PS5 orchestration
   live/         youtube-source.cjs — resolve a YouTube live id → HLS manifest
   store.js      Storage facade: Appwrite cloud (auto) or local JSON fallback
@@ -212,8 +269,12 @@ scripts/
 | GET | `/api/videos/:id/file` | download processed video |
 | GET | `/api/videos/:id/thumb` | JPEG thumbnail |
 | POST | `/api/publish` | publish to platforms |
+| GET | `/api/connections` | account hub status (YouTube/TikTok/Twitch/Kick) |
+| POST | `/api/connections/twitch` / `kick` | save Twitch/Kick config |
+| POST | `/api/connections/chat/test` | live chat connect test |
 | GET | `/api/autopilot/status` | live status |
-| POST | `/api/autopilot/start` / `stop` | run the bot |
+| POST | `/api/autopilot/start` / `stop` | run the bot (youtube + tiktok + twitch + kick) |
+| POST | `/api/autopilot/say` | manual bot reply (`{platform, text}`) |
 | GET | `/api/events` | SSE stream (video/job/chat/reply/log) |
 
 ---

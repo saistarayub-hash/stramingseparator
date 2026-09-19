@@ -27,7 +27,8 @@ const { fetchYouTubeLiveHls } = require('./live/youtube-source.cjs');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
-export const CLIP_DIR = path.join(ROOT, 'data', 'clips');
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, 'data');
+export const CLIP_DIR = path.join(DATA_DIR, 'clips');
 
 const SEGMENT_SECONDS = 2; // slice size for the rolling buffer
 
