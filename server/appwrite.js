@@ -1,20 +1,26 @@
 // Appwrite integration — plug-and-play.
 //
 // Live demo endpoint: https://nyc.cloud.appwrite.io/v1
-// You must supply a Project ID + API key (server key with databases.write,
-// storage.write, files.read). Easiest: console.appwrite.io → your project →
-// Overview → API Keys → "Create API key" with all scopes.
+// You must supply a Project ID + API key (server key). Easiest: in the Appwrite
+// console → your project → Overview → Integrations → API keys → "Create API key"
+// and tick **Select all** (or at least the Databases/DocumentsDB + Storage scopes).
 //
 // The app auto-uses Appwrite when configured; otherwise it falls back to the
 // local JSON store so you can still try everything with zero setup.
 //
 // Auto-bootstrap creates (idempotently):
-//   Database  streampilot          (created from console or via create-db)
-//   Collection videos / publishes
-//   Bucket    videos               (gameplay + clips)
-// and holds settings in collection 'settings'.
+//   Database  streampilot
+//   Collection videos / publishes / settings   (each stores a JSON 'payload')
+//   Bucket    videos                            (gameplay + clips)
+//
+// IMPORTANT — Appwrite 2.x compatibility:
+//   Appwrite renamed its database product. The legacy "Databases/Collections"
+//   API (and its `collections.write` scope) is deprecated; new projects expose
+//   the modern **DocumentsDB** API with `documentsdb.*` scopes. This module
+//   tries DocumentsDB first and transparently falls back to the legacy
+//   Databases API, so it works with old keys AND new "Select all" keys.
 
-import { Client, Storage, Databases, ID, Permission, Role, Query } from 'node-appwrite';
+import { Client, Storage, Databases, DocumentsDB, ID, Permission, Role, Query } from 'node-appwrite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +35,8 @@ export const VIDEOS_BUCKET = 'videos';
 
 let client = null;
 let sdk = null;
+// Which DB API won bootstrap: 'documentsdb' (modern) or 'legacy'.
+let dbMode = null;
 
 // Creds file lives next to the local store (data/appwrite.json).
 const CREDS_PATH = process.env.DATA_DIR
@@ -55,10 +63,16 @@ export function isConfigured() {
   return !!(c.projectId && c.apiKey);
 }
 
+/** Which DB API is active after bootstrap ('documentsdb' | 'legacy' | null). */
+export function appwriteMode() {
+  return dbMode;
+}
+
 /** Drop cached SDK so the next appwrite() re-reads freshly saved creds. */
 export function reloadCreds() {
   sdk = null;
   client = null;
+  dbMode = null;
 }
 
 /** Instantiate (lazily) or throw a friendly error. */
@@ -72,7 +86,8 @@ export function appwrite() {
   sdk = {
     client,
     storage: new Storage(client),
-    databases: new Databases(client),
+    modern: new DocumentsDB(client), // Appwrite 2.x documents API
+    legacy: new Databases(client),   // pre-2.x collections API
     dbId: c.databaseId,
     endpoint: c.endpoint,
   };
@@ -83,27 +98,69 @@ export function appwrite() {
 export const publicRead = (...extra) => [Permission.read(Role.any()), ...extra];
 
 /* ------------------------------------------------------------------ helpers */
-async function ensureDatabase() {
-  const d = appwrite().databases;
-  const dbId = appwrite().dbId;
+function payloadOf(doc) {
+  if (!doc) return null;
   try {
-    await d.get(dbId);
-    return false;
-  } catch {
-    await d.create(dbId, dbId, true); // databaseId, name, enabled
+    return typeof doc.payload === 'string' ? JSON.parse(doc.payload) : (doc.payload || {});
+  } catch { return {}; }
+}
+function recordToDoc(record) {
+  return { payload: JSON.stringify(record ?? {}) };
+}
+
+// The single attribute shared by every collection: a JSON blob so the schema
+// never has to change when StreamPilot adds a field.
+const PAYLOAD_ATTR_LEGACY = ['payload', 65536];            // key, size (64 KB)
+const PAYLOAD_ATTR_MODERN = [{ key: 'payload', type: 'text', required: false }];
+
+/* ------------------------------------------------------------------ bootstrap */
+function isAlreadyExists(e) {
+  const hay = `${e.type || ''} ${e.code || ''} ${e.message || ''} ${e.response || ''}`;
+  return /already[_ ]?exists|already exist|conflict|duplicate/i.test(hay) || e.code === 409;
+}
+
+async function ensureModernDatabase(a) {
+  try {
+    await a.modern.get(a.dbId);
+    return false; // exists (or migrated legacy db) — reuse it
+  } catch (e) {
+    if (isAlreadyExists(e)) return false; // id occupied by a legacy-created db — reuse it
+    await a.modern.create(a.dbId, a.dbId, true); // databaseId, name, enabled → serverless spec
     return true;
   }
 }
 
-async function ensureCollection(name, createDocument) {
-  const d = appwrite().databases;
-  const dbId = appwrite().dbId;
+async function ensureLegacyDatabase(a) {
   try {
-    await d.getCollection(dbId, name);
+    await a.legacy.get(a.dbId);
     return false;
-  } catch {
-    await d.createCollection(dbId, ID.custom(name), name, publicRead());
-    await createDocument(d, dbId, name);
+  } catch (e) {
+    if (isAlreadyExists(e)) return false;
+    await a.legacy.create(a.dbId, a.dbId, true);
+    return true;
+  }
+}
+
+async function ensureModernCollection(a, name) {
+  try {
+    await a.modern.getCollection(a.dbId, name);
+    return false;
+  } catch (e) {
+    if (isAlreadyExists(e)) return false;
+    await a.modern.createCollection(a.dbId, ID.custom(name), name, publicRead(), false, true, PAYLOAD_ATTR_MODERN);
+    return true;
+  }
+}
+
+async function ensureLegacyCollection(a, name) {
+  try {
+    await a.legacy.getCollection(a.dbId, name);
+    return false;
+  } catch (e) {
+    if (isAlreadyExists(e)) return false;
+    await a.legacy.createCollection(a.dbId, ID.custom(name), name, publicRead());
+    try { await a.legacy.createStringAttribute(a.dbId, name, ...PAYLOAD_ATTR_LEGACY, false); }
+    catch { /* already exists */ }
     return true;
   }
 }
@@ -123,93 +180,112 @@ async function ensureBucket() {
       20 * 1024 * 1024 * 1024, // 20GB max file
       [],                   // allowed extensions (all)
       'none',               // compression
-      'none',               // encryption
+      false,                // encryption
       false,                // antivirus
-      '{}',                 // transformations
     );
     return true;
   }
 }
 
-async function attrStrings(db, dbId, coll, defs) {
-  for (const [key, size] of defs) {
-    try { await db.createStringAttribute(dbId, coll, key, size, false); } catch { /* exists */ }
-  }
-}
-async function attrInts(db, dbId, coll, keys) {
-  for (const key of keys) {
-    try { await db.createIntegerAttribute(dbId, coll, key, false); } catch { /* exists */ }
-  }
-}
-
 /**
  * Create the schema if missing (idempotent). Safe to call on every boot.
- * @returns {{created:string[]}} names of things created
+ * Tries the modern DocumentsDB API first, then the legacy Databases API.
+ * @returns {{created:string[], mode:string}} names of things created
  */
 export async function bootstrap() {
+  const a = appwrite();
   const created = [];
-  const db = appwrite().databases;
-  const dbId = appwrite().dbId;
+  let modernError = null;
+  let legacyError = null;
 
-  if (await ensureDatabase()) created.push('database:' + dbId);
+  // 1) Modern DocumentsDB path (Appwrite 2.x keys).
+  try {
+    if (await ensureModernDatabase(a)) created.push('database:' + a.dbId);
+    if (await ensureModernCollection(a, VIDEOS_COLLECTION)) created.push(VIDEOS_COLLECTION);
+    if (await ensureModernCollection(a, PUBLISHES_COLLECTION)) created.push(PUBLISHES_COLLECTION);
+    if (await ensureModernCollection(a, SETTINGS_COLLECTION)) created.push(SETTINGS_COLLECTION);
+    dbMode = 'documentsdb';
+  } catch (e) {
+    modernError = e;
+    dbMode = null;
+  }
 
-  if (await ensureCollection(VIDEOS_COLLECTION, async (d, id, c) => {
-    await attrStrings(d, id, c, [
-      ['name', 512], ['stage', 64], ['source', 32], ['appwriteFileId', 128],
-      ['fixedAppwriteFileId', 128], ['issues', 8192], ['info', 4096],
-      ['highlights', 4096], ['clips', 4096], ['error', 1024],
-    ]);
-    await attrInts(d, id, c, ['originalSize', 'liveOffset']);
-  })) created.push(VIDEOS_COLLECTION);
+  // 2) Legacy fallback (pre-2.x keys / projects without DocumentsDB).
+  if (!dbMode) {
+    try {
+      if (await ensureLegacyDatabase(a)) created.push('database:' + a.dbId);
+      if (await ensureLegacyCollection(a, VIDEOS_COLLECTION)) created.push(VIDEOS_COLLECTION);
+      if (await ensureLegacyCollection(a, PUBLISHES_COLLECTION)) created.push(PUBLISHES_COLLECTION);
+      if (await ensureLegacyCollection(a, SETTINGS_COLLECTION)) created.push(SETTINGS_COLLECTION);
+      dbMode = 'legacy';
+    } catch (e) {
+      legacyError = e;
+    }
+  }
 
-  if (await ensureCollection(PUBLISHES_COLLECTION, async (d, id, c) => {
-    await attrStrings(d, id, c, [['status', 32], ['results', 8192], ['videoId', 128]]);
-  })) created.push(PUBLISHES_COLLECTION);
-
-  if (await ensureCollection(SETTINGS_COLLECTION, async (d, id, c) => {
-    await attrStrings(d, id, c, [['value', 65536]]);
-  })) created.push(SETTINGS_COLLECTION);
+  if (!dbMode) {
+    // Neither API usable — surface the most useful error (prefer the modern one).
+    const err = modernError || legacyError;
+    const detail = modernError && legacyError
+      ? `${modernError.message || modernError}  ·  (legacy also failed: ${legacyError.message || legacyError})`
+      : (err.message || String(err));
+    throw Object.assign(new Error(detail), { code: err.code, type: err.type, response: err.response });
+  }
 
   if (await ensureBucket()) created.push('bucket:' + VIDEOS_BUCKET);
 
-  return { created, databaseId: dbId, endpoint: appwrite().endpoint };
+  return { created, databaseId: a.dbId, endpoint: a.endpoint, mode: dbMode };
 }
 
-/* ------------------------------------------------------------------ video records (Appwrite) */
+// Data-access: whichever API won bootstrap.
+function db() {
+  const a = appwrite();
+  return dbMode === 'documentsdb' ? a.modern : a.legacy;
+}
+
+async function listAll(a, collection) {
+  const d = db();
+  const res = await d.listDocuments(a.dbId, collection, [Query.limit(100)]);
+  return (res.documents || []).map(payloadOf)
+    .sort((x, y) => ((y.createdAt || y.at || '') > (x.createdAt || x.at || '') ? 1 : -1));
+}
+
+/* ------------------------------------------------------------------ video records (cloud) */
 export const appVideos = {
   async list() {
-    const d = appwrite().databases;
-    const res = await d.listDocuments(appwrite().dbId, VIDEOS_COLLECTION, [Query.orderDesc('createdAt')]);
-    return res.documents;
+    return listAll(appwrite(), VIDEOS_COLLECTION);
   },
   async get(id) {
     try {
-      return await appwrite().databases.getDocument(appwrite().dbId, VIDEOS_COLLECTION, id);
+      return payloadOf(await db().getDocument(appwrite().dbId, VIDEOS_COLLECTION, id));
     } catch { return null; }
   },
   async set(id, data) {
-    const d = appwrite().databases;
+    const a = appwrite();
     const existing = await this.get(id).catch(() => null);
-    const merged = existing ? { ...existing, ...data } : data;
-    if (existing) return await d.updateDocument(appwrite().dbId, VIDEOS_COLLECTION, id, sanitize(merged));
-    return await d.createDocument(appwrite().dbId, VIDEOS_COLLECTION, id, sanitize(merged), publicRead());
+    const merged = { ...(existing || {}), ...data, id };
+    if (existing) {
+      return payloadOf(await db().updateDocument(a.dbId, VIDEOS_COLLECTION, id, recordToDoc(merged)));
+    }
+    return payloadOf(await db().createDocument(a.dbId, VIDEOS_COLLECTION, id, recordToDoc(merged), publicRead()));
   },
   async remove(id) {
-    try { await appwrite().databases.deleteDocument(appwrite().dbId, VIDEOS_COLLECTION, id); } catch {}
+    try { await db().deleteDocument(appwrite().dbId, VIDEOS_COLLECTION, id); } catch {}
   },
 };
 
 export const appPublishes = {
   async list() {
-    const res = await appwrite().databases.listDocuments(appwrite().dbId, PUBLISHES_COLLECTION, [Query.orderDesc('at')]);
-    return res.documents;
+    return listAll(appwrite(), PUBLISHES_COLLECTION);
   },
   async set(id, data) {
-    const d = appwrite().databases;
-    const existing = await d.getDocument(appwrite().dbId, PUBLISHES_COLLECTION, id).catch(() => null);
-    const clean = sanitize(data);
-    if (existing) return await d.updateDocument(appwrite().dbId, PUBLISHES_COLLECTION, id, clean);
-    return await d.createDocument(appwrite().dbId, PUBLISHES_COLLECTION, id, clean, publicRead());
+    const a = appwrite();
+    const existing = await db().getDocument(a.dbId, PUBLISHES_COLLECTION, id).then(payloadOf).catch(() => null);
+    const merged = { ...(existing || {}), ...data, id };
+    if (existing) {
+      return payloadOf(await db().updateDocument(a.dbId, PUBLISHES_COLLECTION, id, recordToDoc(merged)));
+    }
+    return payloadOf(await db().createDocument(a.dbId, PUBLISHES_COLLECTION, id, recordToDoc(merged), publicRead()));
   },
 };
 
@@ -217,20 +293,21 @@ export const appPublishes = {
 export const appSettings = {
   async get() {
     try {
-      const res = await appwrite().databases.listDocuments(appwrite().dbId, SETTINGS_COLLECTION, [Query.limit(1)]);
+      const res = await db().listDocuments(appwrite().dbId, SETTINGS_COLLECTION, [Query.limit(1)]);
       const doc = res.documents[0];
       if (!doc) return {};
-      try { return typeof doc.value === 'string' ? JSON.parse(doc.value) : (doc.value || {}); } catch { return {}; }
+      const v = payloadOf(doc);
+      return { value: typeof v === 'object' ? v : {} };
     } catch { return {}; }
   },
   async set(patch) {
-    const d = appwrite().databases;
-    const dbId = appwrite().dbId;
-    const merged = { ...(await this.get()), ...patch };
-    const res = await d.listDocuments(dbId, SETTINGS_COLLECTION, [Query.limit(1)]);
+    const a = appwrite();
+    const cur = await this.get();
+    const merged = { ...(cur.value || {}), ...patch };
+    const res = await db().listDocuments(a.dbId, SETTINGS_COLLECTION, [Query.limit(1)]);
     const doc = res.documents[0];
-    if (doc) return await d.updateDocument(dbId, SETTINGS_COLLECTION, doc.$id, { value: JSON.stringify(merged) });
-    return await d.createDocument(dbId, SETTINGS_COLLECTION, ID.unique(), { value: JSON.stringify(merged) }, publicRead([Permission.write(Role.any())]));
+    if (doc) return await db().updateDocument(a.dbId, SETTINGS_COLLECTION, doc.$id, recordToDoc(merged));
+    return await db().createDocument(a.dbId, SETTINGS_COLLECTION, ID.unique(), recordToDoc(merged), publicRead([Permission.write(Role.any())]));
   },
 };
 
@@ -238,8 +315,8 @@ export const appSettings = {
 export const appFiles = {
   async upload(localPath, { bucket = VIDEOS_BUCKET, name, type = 'video/mp4', fileId } = {}) {
     const storage = appwrite().storage;
-    const fs = await import('node:fs');
-    const buf = fs.readFileSync(localPath);
+    const fsNode = await import('node:fs');
+    const buf = fsNode.readFileSync(localPath);
     const blob = new File([buf], name || 'clip.mp4', { type });
     const fid = fileId || ID.unique();
     await storage.createFile(bucket, fid, blob, publicRead());
@@ -250,21 +327,3 @@ export const appFiles = {
     return `${appwrite().endpoint}/storage/buckets/${bucket}/files/${fileId}/download?project=${process.env.APPWRITE_PROJECT_ID || appwriteConfig().projectId}`;
   },
 };
-
-/** Appwrite returns string/typed values — flatten nested objects we stored as JSON. */
-function sanitize(data) {
-  const out = {};
-  for (const [k, v] of Object.entries(data || {})) {
-    if (v === undefined) continue;
-    if (v !== null && typeof v === 'object' && !Array.isArray(v) && k !== '$permissions' && k !== '$createdAt' && k !== '$updatedAt') {
-      out[k] = JSON.stringify(v);
-    } else if (Array.isArray(v)) {
-      out[k] = JSON.stringify(v);
-    } else if (typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string') {
-      out[k] = v;
-    } else {
-      out[k] = String(v);
-    }
-  }
-  return out;
-}
