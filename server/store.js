@@ -32,6 +32,26 @@ export function getCloudError() {
 
 function describeError(e) {
   if (!e) return 'Unknown error';
+
+  // Appwrite scope rejection — decode it into a plain, actionable message
+  // instead of the raw "missing scopes ([...])" JSON.
+  const hay = `${e.message || ''} ${e.response || ''}`;
+  const scopeRe = /missing scopes \(\[([^\]]*)\]/g;
+  const scopes = [];
+  let mm;
+  while ((mm = scopeRe.exec(hay))) {
+    scopes.push(...mm[1].replace(/\\?"/g, '').split(','));
+  }
+  const uniq = [...new Set(scopes.map((s) => s.trim()).filter(Boolean))];
+  if (uniq.length || e.type === 'general_unauthorized_scope') {
+    return (
+      `API key needs more permissions — missing: ${uniq.join(', ') || 'a required scope'}. ` +
+      'Fix: Appwrite console → your project → Overview → Integrations → API keys → create a key ' +
+      'with "Select all" ticked (or every Database + Storage scope), then paste it into ' +
+      'APPWRITE_API_KEY on Render and tap Retry.'
+    );
+  }
+
   const parts = [];
   if (e.code && (e.type || e.name)) parts.push(`${e.type || e.name} ${e.code}`);
   if (e.message) parts.push(e.message);
