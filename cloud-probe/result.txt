@@ -1,0 +1,5 @@
+# remote-hands probe 2026-09-20T19:38:56Z
+token-present: yes
+https://nyc.cloud.appwrite.io/v1/ping -> 404
+https://streampilot-ttus.onrender.com/api/status -> 200
+https://api.render.com/v1/owners -> 401
