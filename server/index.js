@@ -13,7 +13,7 @@ import {
   initStore, reinitStore, usingCloud, mirrorToCloud, getCloudError, getCloudErrorKind, selfHealCloud,
   saveAppwriteCreds, readAppwriteCredsFile,
 } from './store.js';
-import { isConfigured, appwriteConfig, appwriteMode, activeDatabaseId, DEFAULT_ENDPOINT } from './appwrite.js';
+import { isConfigured, appwriteConfig, appwriteMode, activeDatabaseId, engineProbe, DEFAULT_ENDPOINT } from './appwrite.js';
 import * as yt from './youtube.js';
 import * as autopilot from './autopilot.js';
 import * as liveclip from './liveclip.js';
@@ -481,6 +481,7 @@ app.get('/api/cloud/status', (_req, res) => {
     databaseId: activeDatabaseId() || appwriteConfig().databaseId,
     databaseIdConfigured: appwriteConfig().databaseId,
     engine: appwriteMode() || null,
+    engines: engineProbe(),
     error: getCloudError() || null,
     errorKind: getCloudErrorKind() || null,
     retry: configured && !usingCloud() ? '/api/cloud/retry' : null,
