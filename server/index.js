@@ -10,7 +10,7 @@ import {
 } from './ffmpeg.js';
 import {
   videos, jobs, publishes, getSettings, saveSettings, uid,
-  initStore, reinitStore, usingCloud, mirrorToCloud,
+  initStore, reinitStore, usingCloud, mirrorToCloud, getCloudError, selfHealCloud,
   saveAppwriteCreds, readAppwriteCredsFile,
 } from './store.js';
 import { isConfigured, appwriteConfig, DEFAULT_ENDPOINT } from './appwrite.js';
@@ -471,14 +471,29 @@ app.use('/data/clips', (req, res, next) => {
 app.get('/api/cloud/status', (_req, res) => {
   const creds = readAppwriteCredsFile();
   const endpoint = creds.endpoint || process.env.APPWRITE_ENDPOINT || DEFAULT_ENDPOINT;
+  const configured = isConfigured();
   res.json({
-    configured: isConfigured(),
+    configured,
     active: usingCloud(),
     endpoint,
     projectId: creds.projectId || process.env.APPWRITE_PROJECT_ID || '',
     apiKey: !!(creds.apiKey || process.env.APPWRITE_API_KEY),
     databaseId: appwriteConfig().databaseId,
+    error: getCloudError() || null,
+    retry: configured && !usingCloud() ? '/api/cloud/retry' : null,
   });
+});
+
+/** Re-attempt the Appwrite bootstrap without re-entering the keys. */
+app.post('/api/cloud/retry', async (_req, res) => {
+  try {
+    if (!isConfigured()) return res.status(400).json({ ok: false, error: 'No Appwrite credentials are set. Add your Project ID + API key first.' });
+    const info = await reinitStore();
+    if (info.error) return res.status(400).json({ ok: false, error: info.error });
+    res.json({ ok: true, cloud: true, created: info.created || [] });
+  } catch (e) {
+    res.status(400).json({ ok: false, error: e.message });
+  }
 });
 
 app.post('/api/cloud/connect', async (req, res) => {
@@ -698,6 +713,7 @@ const PORT = Number(process.env.PORT) || 8787;
 async function boot() {
   connections.wireChatBuses();
   const cloudInfo = await initStore();
+  if (!cloudInfo.cloud) selfHealCloud(); // retry later if creds existed but boot failed
   app.listen(PORT, '0.0.0.0', () => {
     console.log('');
     console.log('  ┌──────────────────────────────────────────────────────┐');
@@ -708,6 +724,8 @@ async function boot() {
     console.log(`  FFprobe:    ${ffprobePath}`);
     if (cloudInfo?.cloud) {
       console.log(`  ☁️  Appwrite:   ${appwriteConfig().endpoint} ✅`);
+    } else if (isConfigured()) {
+      console.log('  ⚠️  Appwrite:   configured but NOT connected — check /api/cloud/status for the error. Falling back to local data/.');
     } else {
       console.log('  ☁️  Appwrite:   not configured (local data/) — add keys in Settings → Cloud');
     }

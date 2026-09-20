@@ -20,24 +20,55 @@ export const uid = () => crypto.randomUUID();
 
 // ---------------------------------------------------------------- cloud flag
 let cloudReady = false;
+let lastCloudError = null;
 
 export function usingCloud() {
   return cloudReady && aw.isConfigured();
 }
+/** The most recent bootstrap error message (empty when cloud is up). */
+export function getCloudError() {
+  return lastCloudError;
+}
 
-/** Boot-time: if Appwrite is configured, bootstrap the schema once. */
+function describeError(e) {
+  if (!e) return 'Unknown error';
+  const parts = [];
+  if (e.code && (e.type || e.name)) parts.push(`${e.type || e.name} ${e.code}`);
+  if (e.message) parts.push(e.message);
+  // AppwriteException carries the raw server response body — surface a slice of it.
+  if (e.response && typeof e.response === 'string' && e.response.length) {
+    try {
+      const j = JSON.parse(e.response);
+      parts.push(j.message || j.status || JSON.stringify(j).slice(0, 160));
+    } catch {
+      parts.push(e.response.slice(0, 160));
+    }
+  }
+  return parts.filter(Boolean).join(' — ') || String(e);
+}
+
+/**
+ * Boot-time: if Appwrite is configured, bootstrap the schema once.
+ * Retries a few times (self-heals transient failures on serverless/cold starts).
+ */
 export async function initStore() {
   if (!aw.isConfigured()) return { cloud: false, reason: 'not-configured' };
-  try {
-    const res = await aw.bootstrap();
-    cloudReady = true;
-    console.log(`  ☁️  Appwrite connected: ${aw.appwriteConfig().endpoint} (db: ${res.databaseId})`);
-    return { cloud: true, ...res };
-  } catch (e) {
-    cloudReady = false;
-    console.error('  ⚠️  Appwrite bootstrap failed (using local store):', e.message);
-    return { cloud: false, error: e.message };
+  const attempts = 3;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const res = await aw.bootstrap();
+      cloudReady = true;
+      lastCloudError = null;
+      console.log(`  ☁️  Appwrite connected: ${aw.appwriteConfig().endpoint} (db: ${res.databaseId})`);
+      return { cloud: true, ...res };
+    } catch (e) {
+      lastCloudError = describeError(e);
+      console.error(`  ⚠️  Appwrite bootstrap attempt ${i}/${attempts} failed:`, lastCloudError);
+      if (i < attempts) await new Promise((r) => setTimeout(r, 2000 * i));
+    }
   }
+  cloudReady = false;
+  return { cloud: false, error: lastCloudError };
 }
 
 /** Re-initialise after the user saves new Appwrite credentials. */
@@ -45,6 +76,24 @@ export async function reinitStore() {
   cloudReady = false;
   await aw.reloadCreds();
   return initStore();
+}
+
+/**
+ * If boot-time bootstrap failed but credentials exist, quietly retry in the
+ * background — cloud providers' cold starts sometimes fail the first request.
+ * Fires only once per failed boot; safe to call repeatedly.
+ */
+let selfHealFactory = null;
+export function selfHealCloud() {
+  if (selfHealFactory || !aw.isConfigured()) return;
+  selfHealFactory = true;
+  for (const delay of [8000, 30000, 90000]) {
+    setTimeout(async () => {
+      if (usingCloud()) return; // already up
+      const r = await reinitStore();
+      if (r.cloud) console.log('  ☁️  Appwrite self-healed — connected after a transient failure.');
+    }, delay);
+  }
 }
 
 // ---------------------------------------------------------------- local store

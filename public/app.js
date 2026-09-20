@@ -1044,6 +1044,11 @@ function renderCloud(st) {
     if (st.active) {
       text.textContent = 'Connected to Appwrite ✓';
       sub.innerHTML = `Endpoint <b>${esc(st.endpoint)}</b> · tracked db <b>${esc(st.databaseId)}</b> — videos and clips are mirrored to the cloud automatically.`;
+    } else if (st.configured && st.error) {
+      text.textContent = 'Configured, but not connected yet';
+      sub.innerHTML = `Keys are set (project <b>${esc(st.projectId)}</b>) but the cloud didn't connect. Tap <b>Retry</b> — usually a one-off at this host.`;
+      const errBox = $('#cloud-status-err');
+      if (errBox) { errBox.style.display = 'block'; errBox.textContent = '⚠ ' + (st.error || 'unknown error'); }
     } else if (st.configured) {
       text.textContent = 'Configured, but not active';
       sub.textContent = 'Credentials found but the schema wasn\'t initialised — re-connect to fix.';
@@ -1052,9 +1057,41 @@ function renderCloud(st) {
       sub.textContent = 'Add your Appwrite Project ID + API key below to go live on the cloud. Until then everything runs locally.';
     }
   }
+
+  // Retry button (only when keys are set but cloud is down)
+  let retry = $('#cloud-retry');
+  if (st.configured && !st.active && st.retry) {
+    if (!retry) {
+      retry = document.createElement('button');
+      retry.id = 'cloud-retry';
+      retry.type = 'button';
+      retry.className = 'btn btn-success';
+      retry.textContent = '🔄 Retry connection';
+      retry.addEventListener('click', retryCloud);
+      $('#cloud-status-card')?.appendChild(retry);
+    }
+    retry.style.display = 'inline-flex';
+  } else if (retry) {
+    retry.style.display = 'none';
+  }
+
   // prefill endpoint if blank
   const ep = $('#cloud-endpoint');
   if (ep && !ep.value && st.endpoint) ep.value = st.endpoint;
+}
+
+async function retryCloud() {
+  setBusy($('#cloud-retry'), true, 'Retrying…');
+  try {
+    const r = await api.post('/api/cloud/retry', {});
+    toast('☁️ Cloud connected! ' + ((r.created || []).length ? `Created: ${r.created.join(', ')}` : ''), 'ok');
+    await refreshCloud();
+  } catch (e2) {
+    toast('Still failing: ' + e2.message, 'error');
+    await refreshCloud(); // re-render the error + keep the button
+  } finally {
+    setBusy($('#cloud-retry'), false);
+  }
 }
 
 $('#cloud-form')?.addEventListener('submit', async (e) => {
