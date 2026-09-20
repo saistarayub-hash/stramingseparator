@@ -1,0 +1,35 @@
+# One-shot: which secrets/vars are visible to workflows?
+name: ops-diag
+on:
+  push:
+    paths: ['cloud-probe/diag.txt']
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: report secret presence (lengths only, never values)
+        env:
+          S1: ${{ secrets.RENDER_API_KEY }}
+          S2: ${{ secrets.APPWRITE_API_KEY }}
+          S3: ${{ secrets.APPWRITE_PROJECT_ID }}
+          V1: ${{ vars.RENDER_API_KEY }}
+        run: |
+          {
+            echo "# diag $(date -u +%FT%TZ)"
+            echo "secrets.RENDER_API_KEY       len=$(( $(printf %s "$S1" | wc -c) ))"
+            echo "secrets.APPWRITE_API_KEY     len=$(( $(printf %s "$S2" | wc -c) ))"
+            echo "secrets.APPWRITE_PROJECT_ID  len=$(( $(printf %s "$S3" | wc -c) ))"
+            echo "vars.RENDER_API_KEY          len=$(( $(printf %s "$V1" | wc -c) ))"
+          } | tee cloud-probe/diag.txt
+      - name: commit
+        run: |
+          git config user.name streampilot-bot
+          git config user.email bot@users.noreply.github.com
+          git add cloud-probe/diag.txt
+          git commit -m "chore: diag $(date -u +%FT%TZ)" || echo none
+          git push origin HEAD:arena/01a0ba1a-stramingseparator || echo PUSH-DENIED
+        env:
+          GH_TOKEN: ${{ github.token }}
