@@ -1,0 +1,16 @@
+name: connectivity-probe
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/_probe.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: probe appwrite + render
+        run: |
+          echo "== appwrite ping =="
+          curl -sS -m 15 -H "X-Appwrite-Project: 6aaeab640039b9e4c8eb" https://nyc.cloud.appwrite.io/v1/ping || echo "APPWRITE BLOCKED"
+          echo
+          echo "== render status =="
+          curl -sS -m 15 https://streampilot-ttus.onrender.com/api/status || echo "RENDER BLOCKED"
