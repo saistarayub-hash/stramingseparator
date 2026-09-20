@@ -1054,6 +1054,7 @@ function renderCloud(st) {
       }
       const errBox = $('#cloud-status-err');
       if (errBox) { errBox.style.display = 'block'; errBox.textContent = '⚠ ' + (st.error || 'unknown error'); }
+      refreshCloudScopes();
     } else if (st.configured) {
       text.textContent = 'Configured, but not active';
       sub.textContent = 'Credentials found but the schema wasn\'t initialised — re-connect to fix.';
@@ -1123,6 +1124,20 @@ $('#cloud-disconnect')?.addEventListener('click', async () => {
   toast('Disconnected from Appwrite — back to local mode.');
   await refreshCloud();
 });
+
+// Granular scope checklist — shows every permission the key is missing.
+async function refreshCloudScopes() {
+  const box = $('#cloud-scopes');
+  if (!box) return;
+  try {
+    const r = await api.get('/api/cloud/scopes');
+    if (!r.configured || !r.checks || !r.checks.length) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="hint" style="margin:4px 0 6px"><b>Key permission check</b> (' + r.okCount + '/' + r.total + ' OK):</div>'
+      + r.checks.map((c) => `<div class="scope-line ${c.ok ? 'ok' : 'bad'}">${c.ok ? '✅' : '❌'} ${esc(c.name)}${c.missing?.length ? ` <span class="dim">— add <b>${esc(c.missing[0])}</b></span>` : ''}${c.error ? ` <span class="dim">— ${esc(c.error)}</span>` : ``}</div>`).join('');
+  } catch (e) {
+    box.innerHTML = '';
+  }
+}
 
 /* ------------------------------------------------------------------ settings */
 async function refreshSettings() {

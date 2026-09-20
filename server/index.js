@@ -14,6 +14,7 @@ import {
   saveAppwriteCreds, readAppwriteCredsFile,
 } from './store.js';
 import { isConfigured, appwriteConfig, appwriteMode, activeDatabaseId, engineProbe, DEFAULT_ENDPOINT } from './appwrite.js';
+import { probeScopes, clearScopeCache } from './scopeprobe.js';
 import * as yt from './youtube.js';
 import * as autopilot from './autopilot.js';
 import * as liveclip from './liveclip.js';
@@ -494,11 +495,21 @@ app.get('/api/cloud/status', (_req, res) => {
 app.post('/api/cloud/retry', async (_req, res) => {
   try {
     if (!isConfigured()) return res.status(400).json({ ok: false, error: 'No Appwrite credentials are set. Add your Project ID + API key first.' });
+    clearScopeCache();
     const info = await reinitStore();
     if (info.error) return res.status(400).json({ ok: false, error: info.error });
     res.json({ ok: true, cloud: true, created: info.created || [] });
   } catch (e) {
     res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+/** Granular scope checklist — names every checkbox the key is missing. */
+app.get('/api/cloud/scopes', async (_req, res) => {
+  try {
+    res.json(await probeScopes());
+  } catch (e) {
+    res.status(400).json({ configured: false, error: e.message });
   }
 });
 

@@ -43,6 +43,7 @@ let activeDbId = null;
 // Capability probe results from the last bootstrap attempt — surfaced via
 // /api/cloud/status so permission gaps are visible at a glance.
 let lastProbe = { modern: null, legacy: null };
+let lastWrite = { modern: null, legacy: null };
 
 // Creds file lives next to the local store (data/appwrite.json).
 const CREDS_PATH = process.env.DATA_DIR

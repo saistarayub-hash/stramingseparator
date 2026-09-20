@@ -514,3 +514,10 @@ select.input option { background: #131628; }
   .main { padding: 20px; }
   .settings-grid { grid-template-columns: 1fr; }
 }
+
+/* cloud scope checklist */
+#cloud-scopes { margin-top:10px; }
+.scope-line { font-size:12px; line-height:1.7; color:var(--dim); }
+.scope-line.ok { color:var(--ok, #4ade80); }
+.scope-line.bad { color:var(--red, #f87171); }
+.scope-line .dim { color:var(--dim); opacity:.85; }
