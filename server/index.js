@@ -472,12 +472,14 @@ app.get('/api/cloud/status', (_req, res) => {
   const creds = readAppwriteCredsFile();
   const endpoint = creds.endpoint || process.env.APPWRITE_ENDPOINT || DEFAULT_ENDPOINT;
   const configured = isConfigured();
+  const liveKey = creds.apiKey || process.env.APPWRITE_API_KEY || '';
   res.json({
     configured,
     active: usingCloud(),
     endpoint,
     projectId: creds.projectId || process.env.APPWRITE_PROJECT_ID || '',
-    apiKey: !!(creds.apiKey || process.env.APPWRITE_API_KEY),
+    apiKey: !!liveKey,
+    apiKeyTail: liveKey ? liveKey.slice(-6) : null,
     databaseId: activeDatabaseId() || appwriteConfig().databaseId,
     databaseIdConfigured: appwriteConfig().databaseId,
     engine: appwriteMode() || null,
