@@ -35,11 +35,14 @@ export const VIDEOS_BUCKET = 'videos';
 
 let client = null;
 let sdk = null;
-// Which DB API won bootstrap: 'documentsdb' (modern) or 'legacy'.
+// Which DB API won bootstrap: 'modern' (DocumentsDB) or 'legacy' (Databases).
 let dbMode = null;
 // The database id actually in use after bootstrap (may differ from the
 // configured id if the legacy engine already reserves it).
 let activeDbId = null;
+// Capability probe results from the last bootstrap attempt — surfaced via
+// /api/cloud/status so permission gaps are visible at a glance.
+let lastProbe = { modern: null, legacy: null };
 
 // Creds file lives next to the local store (data/appwrite.json).
 const CREDS_PATH = process.env.DATA_DIR
@@ -74,6 +77,11 @@ export function appwriteMode() {
 /** The database id actually in use after bootstrap (may ≠ configured id). */
 export function activeDatabaseId() {
   return activeDbId;
+}
+
+/** Which engine can this key actually use? ({modern, legacy} → 'full'|'blocked'|null) */
+export function engineProbe() {
+  return lastProbe;
 }
 
 /** Drop cached SDK so the next appwrite() re-reads freshly saved creds. */
@@ -149,6 +157,20 @@ function isAlreadyExists(e) {
   return /already[_ ]?exists|already exist|conflict|duplicate/i.test(hay) || e.code === 409;
 }
 
+function isAuthFailure(e) {
+  return (e && (e.type === 'general_unauthorized_scope' || e.code === 401));
+}
+
+async function engineAuth(a, engine) {
+  try {
+    await a[engine].list();
+    return 'full';
+  } catch (e) {
+    if (isAuthFailure(e)) return 'blocked';
+    throw e;
+  }
+}
+
 async function createDatabase(a, engine, id) {
   if (engine === 'modern') await a.modern.create(id, id, true);
   else await a.legacy.create(id, id, true);
@@ -156,17 +178,21 @@ async function createDatabase(a, engine, id) {
 
 // If a modern-capable key wants a fresh id (because "wanted" is locked by the
 // legacy engine), try to create/claim one of our alternate ids on modern.
+// Throws (with the underlying error) so callers can report it verbatim.
 async function tryModernPick(a, wanted) {
   // Prefer to keep using the wanted id directly on modern if it's actually
   // visible (shouldn't happen here, but be safe).
-  try { await a.modern.get(wanted); return wanted; } catch { /* not visible */ }
+  try { await a.modern.get(wanted); return { id: wanted, reused: true }; } catch { /* not visible */ }
+  let lastErr = null;
   for (const id of EXTRA_DB_IDS) {
-    try { await a.modern.get(id); return id; } // already exists → reuse
-    catch { /* try creating it */ }
-    try { await a.modern.create(id, id, true); return id; }
-    catch (e) { if (!isAlreadyExists(e)) throw e; return id; }
+    try { await a.modern.get(id); return { id, reused: true }; } catch { /* try creating it */ }
+    try { await a.modern.create(id, id, true); return { id, reused: false }; }
+    catch (e) {
+      if (isAlreadyExists(e)) return { id, reused: true };
+      lastErr = e;
+    }
   }
-  throw new Error('modern engine could not create an alternate database id');
+  throw (lastErr || new Error('modern engine could not create an alternate database id'));
 }
 
 async function ensureModernCollection(a, name) {
@@ -229,6 +255,23 @@ export async function bootstrap() {
 
   // ── decide engine + database id ─────────────────────────────────────────
   const existing = await pickDatabaseId(a);
+
+  // Lightweight capability probe — tell us in plain English which API the key
+  // can actually use, before attempting any writes.
+  const probeModern = await engineAuth(a, 'modern').catch((e) => `unavailable: ${e.message || e}`);
+  const probeLegacy = await engineAuth(a, 'legacy').catch((e) => `unavailable: ${e.message || e}`);
+  lastProbe = { modern: probeModern, legacy: probeLegacy };
+
+  if (probeModern === 'blocked' && probeLegacy === 'blocked') {
+    throw Object.assign(new Error(
+      'The API key cannot read either Appwrite database API (it has NO database scopes).\n' +
+      'Fix: Appwrite console → your project → Overview → Integrations → API keys → ' +
+      'create a NEW key and tick every "Databases" + "DocumentsDB" + "Storage" scope. ' +
+      'Then paste it into APPWRITE_API_KEY on Render and redeploy.'
+    ), { code: 401, type: 'general_unauthorized_scope' });
+  }
+  const modernOk = probeModern === 'full';
+  const legacyOk = probeLegacy === 'full';
 
   if (!existing.modern && !existing.legacy) {
     // Fresh project: try modern first, then legacy.
