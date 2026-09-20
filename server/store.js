@@ -21,6 +21,7 @@ export const uid = () => crypto.randomUUID();
 // ---------------------------------------------------------------- cloud flag
 let cloudReady = false;
 let lastCloudError = null;
+let lastCloudErrorKind = null;
 
 export function usingCloud() {
   return cloudReady && aw.isConfigured();
@@ -28,6 +29,10 @@ export function usingCloud() {
 /** The most recent bootstrap error message (empty when cloud is up). */
 export function getCloudError() {
   return lastCloudError;
+}
+/** 'auth' | 'network' | 'other' | null — lets the UI show the right advice. */
+export function getCloudErrorKind() {
+  return lastCloudErrorKind;
 }
 
 function describeError(e) {
@@ -67,6 +72,19 @@ function describeError(e) {
   return parts.filter(Boolean).join(' — ') || String(e);
 }
 
+/** Categorise a bootstrap failure so the app + UI can react correctly. */
+export function errorKind(e) {
+  if (!e) return 'unknown';
+  const hay = `${e.message || ''} ${e.response || ''}`;
+  if (e.type === 'general_unauthorized_scope' || /missing scopes/i.test(hay) || e.code === 401) {
+    return 'auth'; // wrong/insufficient key — retries won't help
+  }
+  if (/fetch failed|ECONN|ETIMEDOUT|ENOTFOUND|network|socket/i.test(hay)) {
+    return 'network'; // transient — retrying is worthwhile
+  }
+  return 'other';
+}
+
 /**
  * Boot-time: if Appwrite is configured, bootstrap the schema once.
  * Retries a few times (self-heals transient failures on serverless/cold starts).
@@ -79,11 +97,14 @@ export async function initStore() {
       const res = await aw.bootstrap();
       cloudReady = true;
       lastCloudError = null;
+      lastCloudErrorKind = null;
       console.log(`  ☁️  Appwrite connected: ${aw.appwriteConfig().endpoint} (db: ${res.databaseId})`);
       return { cloud: true, ...res };
     } catch (e) {
       lastCloudError = describeError(e);
+      lastCloudErrorKind = errorKind(e);
       console.error(`  ⚠️  Appwrite bootstrap attempt ${i}/${attempts} failed:`, lastCloudError);
+      if (errorKind(e) === 'auth') break; // a wrong key won't fix itself
       if (i < attempts) await new Promise((r) => setTimeout(r, 2000 * i));
     }
   }

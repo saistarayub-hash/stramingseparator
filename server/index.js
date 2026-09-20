@@ -10,7 +10,7 @@ import {
 } from './ffmpeg.js';
 import {
   videos, jobs, publishes, getSettings, saveSettings, uid,
-  initStore, reinitStore, usingCloud, mirrorToCloud, getCloudError, selfHealCloud,
+  initStore, reinitStore, usingCloud, mirrorToCloud, getCloudError, getCloudErrorKind, selfHealCloud,
   saveAppwriteCreds, readAppwriteCredsFile,
 } from './store.js';
 import { isConfigured, appwriteConfig, DEFAULT_ENDPOINT } from './appwrite.js';
@@ -480,6 +480,7 @@ app.get('/api/cloud/status', (_req, res) => {
     apiKey: !!(creds.apiKey || process.env.APPWRITE_API_KEY),
     databaseId: appwriteConfig().databaseId,
     error: getCloudError() || null,
+    errorKind: getCloudErrorKind() || null,
     retry: configured && !usingCloud() ? '/api/cloud/retry' : null,
   });
 });

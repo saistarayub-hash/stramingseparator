@@ -1045,8 +1045,13 @@ function renderCloud(st) {
       text.textContent = 'Connected to Appwrite ✓';
       sub.innerHTML = `Endpoint <b>${esc(st.endpoint)}</b> · tracked db <b>${esc(st.databaseId)}</b> — videos and clips are mirrored to the cloud automatically.`;
     } else if (st.configured && st.error) {
-      text.textContent = 'Configured, but not connected yet';
-      sub.innerHTML = `Keys are set (project <b>${esc(st.projectId)}</b>) but the cloud didn't connect. Tap <b>Retry</b> — usually a one-off at this host.`;
+      if (st.errorKind === 'auth') {
+        text.textContent = '❌ API key has no permission — fix this in Appwrite';
+        sub.innerHTML = 'The key saved on Render can\'t create collections. Make a <b>new</b> key in Appwrite → <b>Overview → Integrations → API keys</b> → tick <b>"Select all"</b> (or every Databases + Storage scope) → paste it into <b>APPWRITE_API_KEY</b> on Render. Don\'t edit an old key — editing can drop scopes (known Appwrite bug).';
+      } else {
+        text.textContent = 'Configured, but not connected yet';
+        sub.innerHTML = `Keys are set (project <b>${esc(st.projectId)}</b>) but the cloud didn't connect. Tap <b>Retry</b> — usually a one-off at this host.`;
+      }
       const errBox = $('#cloud-status-err');
       if (errBox) { errBox.style.display = 'block'; errBox.textContent = '⚠ ' + (st.error || 'unknown error'); }
     } else if (st.configured) {
