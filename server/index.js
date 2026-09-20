@@ -13,7 +13,7 @@ import {
   initStore, reinitStore, usingCloud, mirrorToCloud, getCloudError, getCloudErrorKind, selfHealCloud,
   saveAppwriteCreds, readAppwriteCredsFile,
 } from './store.js';
-import { isConfigured, appwriteConfig, DEFAULT_ENDPOINT } from './appwrite.js';
+import { isConfigured, appwriteConfig, appwriteMode, activeDatabaseId, DEFAULT_ENDPOINT } from './appwrite.js';
 import * as yt from './youtube.js';
 import * as autopilot from './autopilot.js';
 import * as liveclip from './liveclip.js';
@@ -478,7 +478,9 @@ app.get('/api/cloud/status', (_req, res) => {
     endpoint,
     projectId: creds.projectId || process.env.APPWRITE_PROJECT_ID || '',
     apiKey: !!(creds.apiKey || process.env.APPWRITE_API_KEY),
-    databaseId: appwriteConfig().databaseId,
+    databaseId: activeDatabaseId() || appwriteConfig().databaseId,
+    databaseIdConfigured: appwriteConfig().databaseId,
+    engine: appwriteMode() || null,
     error: getCloudError() || null,
     errorKind: getCloudErrorKind() || null,
     retry: configured && !usingCloud() ? '/api/cloud/retry' : null,
@@ -724,7 +726,7 @@ async function boot() {
     console.log(`  FFmpeg:     ${ffmpegPath}`);
     console.log(`  FFprobe:    ${ffprobePath}`);
     if (cloudInfo?.cloud) {
-      console.log(`  ☁️  Appwrite:   ${appwriteConfig().endpoint} ✅`);
+      console.log(`  ☁️  Appwrite:   ${appwriteConfig().endpoint} ✅ (db: ${cloudInfo.databaseId || appwriteConfig().databaseId}, engine: ${cloudInfo.mode || 'auto'})`);
     } else if (isConfigured()) {
       console.log('  ⚠️  Appwrite:   configured but NOT connected — check /api/cloud/status for the error. Falling back to local data/.');
     } else {

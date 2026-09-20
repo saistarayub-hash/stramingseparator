@@ -37,6 +37,9 @@ let client = null;
 let sdk = null;
 // Which DB API won bootstrap: 'documentsdb' (modern) or 'legacy'.
 let dbMode = null;
+// The database id actually in use after bootstrap (may differ from the
+// configured id if the legacy engine already reserves it).
+let activeDbId = null;
 
 // Creds file lives next to the local store (data/appwrite.json).
 const CREDS_PATH = process.env.DATA_DIR
@@ -63,9 +66,14 @@ export function isConfigured() {
   return !!(c.projectId && c.apiKey);
 }
 
-/** Which DB API is active after bootstrap ('documentsdb' | 'legacy' | null). */
+/** Which DB API is active after bootstrap ('modern' | 'legacy' | null). */
 export function appwriteMode() {
   return dbMode;
+}
+
+/** The database id actually in use after bootstrap (may ≠ configured id). */
+export function activeDatabaseId() {
+  return activeDbId;
 }
 
 /** Drop cached SDK so the next appwrite() re-reads freshly saved creds. */
@@ -73,6 +81,7 @@ export function reloadCreds() {
   sdk = null;
   client = null;
   dbMode = null;
+  activeDbId = null;
 }
 
 /** Instantiate (lazily) or throw a friendly error. */
@@ -88,7 +97,7 @@ export function appwrite() {
     storage: new Storage(client),
     modern: new DocumentsDB(client), // Appwrite 2.x documents API
     legacy: new Databases(client),   // pre-2.x collections API
-    dbId: c.databaseId,
+    dbId: activeDbId || c.databaseId,
     endpoint: c.endpoint,
   };
   return sdk;
@@ -114,31 +123,50 @@ const PAYLOAD_ATTR_LEGACY = ['payload', 65536];            // key, size (64 KB)
 const PAYLOAD_ATTR_MODERN = [{ key: 'payload', type: 'text', required: false }];
 
 /* ------------------------------------------------------------------ bootstrap */
+const EXTRA_DB_IDS = ['streampilot-2', 'streampilot-v2'];
+
+// Which configured database ids exist in each engine.
+async function pickDatabaseId(a) {
+  const found = { modern: null, legacy: null };
+  // 1) Prefer the configured id if either engine can see it.
+  for (const engine of ['modern', 'legacy']) {
+    try { await a[engine].get(a.dbId); found[engine] = a.dbId; }
+    catch { /* not visible */ }
+  }
+  // 2) Otherwise discover an existing id we created earlier (either engine).
+  for (const id of EXTRA_DB_IDS) {
+    for (const engine of ['modern', 'legacy']) {
+      if (found[engine]) continue;
+      try { await a[engine].get(id); found[engine] = id; }
+      catch { /* not visible */ }
+    }
+  }
+  return found;
+}
+
 function isAlreadyExists(e) {
   const hay = `${e.type || ''} ${e.code || ''} ${e.message || ''} ${e.response || ''}`;
   return /already[_ ]?exists|already exist|conflict|duplicate/i.test(hay) || e.code === 409;
 }
 
-async function ensureModernDatabase(a) {
-  try {
-    await a.modern.get(a.dbId);
-    return false; // exists (or migrated legacy db) — reuse it
-  } catch (e) {
-    if (isAlreadyExists(e)) return false; // id occupied by a legacy-created db — reuse it
-    await a.modern.create(a.dbId, a.dbId, true); // databaseId, name, enabled → serverless spec
-    return true;
-  }
+async function createDatabase(a, engine, id) {
+  if (engine === 'modern') await a.modern.create(id, id, true);
+  else await a.legacy.create(id, id, true);
 }
 
-async function ensureLegacyDatabase(a) {
-  try {
-    await a.legacy.get(a.dbId);
-    return false;
-  } catch (e) {
-    if (isAlreadyExists(e)) return false;
-    await a.legacy.create(a.dbId, a.dbId, true);
-    return true;
+// If a modern-capable key wants a fresh id (because "wanted" is locked by the
+// legacy engine), try to create/claim one of our alternate ids on modern.
+async function tryModernPick(a, wanted) {
+  // Prefer to keep using the wanted id directly on modern if it's actually
+  // visible (shouldn't happen here, but be safe).
+  try { await a.modern.get(wanted); return wanted; } catch { /* not visible */ }
+  for (const id of EXTRA_DB_IDS) {
+    try { await a.modern.get(id); return id; } // already exists → reuse
+    catch { /* try creating it */ }
+    try { await a.modern.create(id, id, true); return id; }
+    catch (e) { if (!isAlreadyExists(e)) throw e; return id; }
   }
+  throw new Error('modern engine could not create an alternate database id');
 }
 
 async function ensureModernCollection(a, name) {
@@ -189,58 +217,76 @@ async function ensureBucket() {
 
 /**
  * Create the schema if missing (idempotent). Safe to call on every boot.
- * Tries the modern DocumentsDB API first, then the legacy Databases API.
- * @returns {{created:string[], mode:string}} names of things created
+ * Negotiates engine (modern DocumentsDB vs legacy Databases) and database id
+ * based on what the API key can actually see/create — so it works with
+ * Appwrite 2.x keys (documentsdb.* scopes) AND legacy keys (collections.*).
+ * @returns {{created:string[], mode:string, databaseId:string}}
  */
 export async function bootstrap() {
   const a = appwrite();
   const created = [];
-  let modernError = null;
-  let legacyError = null;
+  const wanted = a.dbId;
 
-  // 1) Modern DocumentsDB path (Appwrite 2.x keys).
-  try {
-    if (await ensureModernDatabase(a)) created.push('database:' + a.dbId);
-    if (await ensureModernCollection(a, VIDEOS_COLLECTION)) created.push(VIDEOS_COLLECTION);
-    if (await ensureModernCollection(a, PUBLISHES_COLLECTION)) created.push(PUBLISHES_COLLECTION);
-    if (await ensureModernCollection(a, SETTINGS_COLLECTION)) created.push(SETTINGS_COLLECTION);
-    dbMode = 'documentsdb';
-  } catch (e) {
-    modernError = e;
-    dbMode = null;
-  }
+  // ── decide engine + database id ─────────────────────────────────────────
+  const existing = await pickDatabaseId(a);
 
-  // 2) Legacy fallback (pre-2.x keys / projects without DocumentsDB).
-  if (!dbMode) {
+  if (!existing.modern && !existing.legacy) {
+    // Fresh project: try modern first, then legacy.
     try {
-      if (await ensureLegacyDatabase(a)) created.push('database:' + a.dbId);
-      if (await ensureLegacyCollection(a, VIDEOS_COLLECTION)) created.push(VIDEOS_COLLECTION);
-      if (await ensureLegacyCollection(a, PUBLISHES_COLLECTION)) created.push(PUBLISHES_COLLECTION);
-      if (await ensureLegacyCollection(a, SETTINGS_COLLECTION)) created.push(SETTINGS_COLLECTION);
-      dbMode = 'legacy';
+      await createDatabase(a, 'modern', wanted);
+      dbMode = 'modern'; activeDbId = wanted;
     } catch (e) {
-      legacyError = e;
+      try {
+        await createDatabase(a, 'legacy', wanted);
+        dbMode = 'legacy'; activeDbId = wanted;
+      } catch (e2) {
+        throw Object.assign(new Error(
+          `Could not create Appwrite database "${wanted}" with either API.\n` +
+          `  modern (DocumentsDB): ${e.message || e}\n` +
+          `  legacy (Databases) : ${e2.message || e2}`),
+          { code: e2.code || e.code, type: e2.type || e.type, response: e2.response || e.response });
+      }
+    }
+    a.dbId = activeDbId;
+    created.push('database:' + activeDbId);
+  } else if (existing.modern) {
+    // Modern engine can see a database — use it.
+    dbMode = 'modern'; activeDbId = existing.modern;
+    a.dbId = activeDbId;
+  } else {
+    // Only legacy can see a database. This is the tricky case: an earlier
+    // run created a *legacy* database under the wanted id, which now blocks
+    // the modern id namespace. If we're on a modern-capable key, put our
+    // data in a fresh id instead of fighting for the locked one.
+    const modernOk = async () => {
+      try { return await tryModernPick(a, wanted); } catch { return null; }
+    };
+    const altId = await modernOk();
+    if (altId) {
+      dbMode = 'modern'; activeDbId = altId;
+      a.dbId = activeDbId;
+      created.push('database:' + activeDbId);
+    } else {
+      dbMode = 'legacy'; activeDbId = existing.legacy;
+      a.dbId = activeDbId;
     }
   }
 
-  if (!dbMode) {
-    // Neither API usable — surface the most useful error (prefer the modern one).
-    const err = modernError || legacyError;
-    const detail = modernError && legacyError
-      ? `${modernError.message || modernError}  ·  (legacy also failed: ${legacyError.message || legacyError})`
-      : (err.message || String(err));
-    throw Object.assign(new Error(detail), { code: err.code, type: err.type, response: err.response });
-  }
+  // ── ensure collections on the chosen engine ─────────────────────────────
+  const ensureCol = dbMode === 'modern' ? ensureModernCollection : ensureLegacyCollection;
+  if (await ensureCol(a, VIDEOS_COLLECTION)) created.push(VIDEOS_COLLECTION);
+  if (await ensureCol(a, PUBLISHES_COLLECTION)) created.push(PUBLISHES_COLLECTION);
+  if (await ensureCol(a, SETTINGS_COLLECTION)) created.push(SETTINGS_COLLECTION);
 
   if (await ensureBucket()) created.push('bucket:' + VIDEOS_BUCKET);
 
-  return { created, databaseId: a.dbId, endpoint: a.endpoint, mode: dbMode };
+  return { created, databaseId: activeDbId, endpoint: a.endpoint, mode: dbMode };
 }
 
 // Data-access: whichever API won bootstrap.
 function db() {
   const a = appwrite();
-  return dbMode === 'documentsdb' ? a.modern : a.legacy;
+  return dbMode === 'modern' ? a.modern : a.legacy;
 }
 
 async function listAll(a, collection) {
