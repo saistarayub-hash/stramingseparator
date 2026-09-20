@@ -1,16 +1,26 @@
 name: connectivity-probe
 on:
   workflow_dispatch:
-  push:
-    paths: ['.github/workflows/_probe.yml']
+    inputs:
+      key:
+        description: 'appwrite api key (optional)'
+        required: false
+        default: ''
 jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
       - name: probe appwrite + render
         run: |
-          echo "== appwrite ping =="
-          curl -sS -m 15 -H "X-Appwrite-Project: 6aaeab640039b9e4c8eb" https://nyc.cloud.appwrite.io/v1/ping || echo "APPWRITE BLOCKED"
+          echo "== appwrite ping (no auth) =="
+          curl -sS -m 15 https://nyc.cloud.appwrite.io/v1/ping || echo "APPWRITE BLOCKED"
           echo
           echo "== render status =="
           curl -sS -m 15 https://streampilot-ttus.onrender.com/api/status || echo "RENDER BLOCKED"
+          echo
+          if [ -n "${{ github.event.inputs.key }}" ]; then
+            echo "== key present (len $(echo -n '${{ github.event.inputs.key }}' | wc -c)) — probing scopes =="
+            curl -sS -m 15 -H "X-Appwrite-Project: 6aaeab640039b9e4c8eb" -H "X-Appwrite-Key: ${{ github.event.inputs.key }}" https://nyc.cloud.appwrite.io/v1/databases || echo "(legacy databases list failed)"
+          else
+            echo "== no key supplied =="
+          fi
