@@ -821,8 +821,12 @@ function renderConnDetail() {
       </div>
       <div class="hint">Uploads + live-chat replying. Uses your own Google OAuth so there are no API fees.</div>`;
     $('#conn-yt-btn')?.addEventListener('click', async () => {
-      const { url } = await api.get('/api/youtube/auth-url');
-      window.location.href = url;
+      try {
+        const { url } = await api.get('/api/youtube/auth-url');
+        window.location.href = url;
+      } catch (e) {
+        toast(e.message, 'error');
+      }
     });
     return;
   }
@@ -951,8 +955,12 @@ function renderYoutubeConnect() {
     box.innerHTML = `<button class="btn btn-primary" id="yt-link-btn">🔴 Connect YouTube channel</button>
       <div class="hint">OAuth login via Google — grant upload privileges to your channel.</div>`;
     $('#yt-link-btn')?.addEventListener('click', async () => {
-      const { url } = await api.get('/api/youtube/auth-url');
-      window.location.href = url;
+      try {
+        const { url } = await api.get('/api/youtube/auth-url');
+        window.location.href = url;
+      } catch (e) {
+        toast(e.message, 'error');
+      }
     });
   }
 }
@@ -1047,7 +1055,7 @@ function renderCloud(st) {
     } else if (st.configured && st.error) {
       if (st.errorKind === 'auth') {
         text.textContent = '❌ API key has no permission — fix this in Appwrite';
-        sub.innerHTML = 'The key saved on Render can\'t create collections. Make a <b>new</b> key in Appwrite → <b>Overview → Integrations → API keys</b> → tick <b>"Select all"</b> (or every Databases + Storage scope) → paste it into <b>APPWRITE_API_KEY</b> on Render. Don\'t edit an old key — editing can drop scopes (known Appwrite bug).';
+        sub.innerHTML = 'This key can\'t write to the database. StreamPilot auto-tries all three Appwrite engines (TablesDB → DocumentsDB → Legacy) and needs a key that can create a database + table/collection + storage bucket. In Appwrite → <b>Integrations → API keys</b>, create a <b>new</b> key with <b>"Select all"</b> ticked, then paste it into <b>Settings → Cloud</b> below and hit <b>Connect</b>. (Editing an old key can silently drop scopes — always make a fresh one.)';
       } else {
         text.textContent = 'Configured, but not connected yet';
         sub.innerHTML = `Keys are set (project <b>${esc(st.projectId)}</b>) but the cloud didn't connect. Tap <b>Retry</b> — usually a one-off at this host.`;

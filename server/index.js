@@ -578,18 +578,44 @@ app.get('/api/youtube/status', async (_req, res) => {
   }
 });
 
-app.get('/api/youtube/auth-url', (_req, res) => res.json({ url: yt.authUrl() }));
+app.get('/api/youtube/auth-url', (req, res) => {
+  try {
+    res.json({ url: yt.authUrl(process.env, yt.requestOrigin(req)) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 app.get('/auth/youtube/callback', async (req, res) => {
   const { code, error } = req.query;
-  if (error) return res.redirect('/?youtube=denied&reason=' + encodeURIComponent(error));
+  if (error) {
+    return res.status(200).type('html').send(errorPage(
+      'Google authorization was not completed.',
+      `Google returned an error: ${error}. You can close this tab and try again from the app — nothing was changed.`
+    ));
+  }
   try {
-    await yt.exchangeCode(code);
-    res.redirect('/?youtube=connected');
+    await yt.exchangeCode(code, yt.resolveRedirect(process.env, yt.requestOrigin(req)));
+    return res.status(200).type('html').send(errorPage(
+      'YouTube connected! 🎉',
+      'Your channel is linked. Close this tab and go back to StreamPilot — you can now publish to YouTube and run the live-chat autopilot.',
+      true
+    ));
   } catch (e) {
-    res.redirect('/?youtube=error&reason=' + encodeURIComponent(e.message));
+    return res.status(200).type('html').send(errorPage(
+      'Could not finish the YouTube connection.',
+      `${e.message} — common fixes: make sure the redirect URI was registered exactly, the client id/secret match, and the YouTube Data API v3 is enabled. Close this tab and try again.`
+    ));
   }
 });
+
+function errorPage(title, msg, ok = false) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>StreamPilot · YouTube</title>
+<style>body{font-family:system-ui,sans-serif;background:#0b0d1a;color:#e6e9ff;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{max-width:480px;padding:32px;border:1px solid #262b4d;border-radius:14px;background:#12152b}
+.ico{font-size:40px}.h{font-size:20px;font-weight:700;margin:12px 0 8px}.p{color:#aab} .ok .ico{color:#22c55e}</style></head>
+<body><div class="card ${ok ? 'ok' : ''}"><div class="ico">${ok ? '✅' : '⚠️'}</div><div class="h">${title}</div><div class="p">${msg}</div></div></body></html>`;
+}
 
 // ------------------------------------------------------------------- autopilot (live)
 app.get('/api/autopilot/status', (_req, res) => res.json(autopilot.status()));

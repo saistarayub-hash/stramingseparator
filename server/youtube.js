@@ -10,11 +10,40 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const API = 'https://www.googleapis.com';
 
-export function youtubeConfigFrom(env = process.env) {
+const LOCAL_DEFAULT_REDIRECT = 'http://localhost:8787/auth/youtube/callback';
+
+/** Public origin of this instance, derived from the live request or APP_URL. */
+export function requestOrigin(req, env = process.env) {
+  if (req && req.get) {
+    const host = req.get('host');
+    if (host) {
+      const proto = req.get('x-forwarded-proto') || req.get('x-forwarded-scheme') || req.protocol || 'http';
+      return `${proto}://${host}`;
+    }
+  }
+  const appUrl = String(env.APP_URL || '').replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(appUrl)) return appUrl;
+  return 'http://localhost:8787';
+}
+
+/**
+ * The OAuth redirect URI. Explicit YOUTUBE_REDIRECT_URI wins, then APP_URL,
+ * then the live request host — so the hosted app always uses its real
+ * onrender.com callback instead of a dead localhost URL.
+ */
+export function resolveRedirect(env = process.env, origin = null) {
+  if (env.YOUTUBE_REDIRECT_URI) return env.YOUTUBE_REDIRECT_URI;
+  if (origin) return `${String(origin).replace(/\/+$/, '')}/auth/youtube/callback`;
+  const appUrl = String(env.APP_URL || '').replace(/\/+$/, '');
+  if (/^https?:\/\//i.test(appUrl)) return `${appUrl}/auth/youtube/callback`;
+  return LOCAL_DEFAULT_REDIRECT;
+}
+
+export function youtubeConfigFrom(env = process.env, origin = null) {
   return {
     clientId: env.YOUTUBE_CLIENT_ID,
     clientSecret: env.YOUTUBE_CLIENT_SECRET,
-    redirectUri: env.YOUTUBE_REDIRECT_URI || 'http://localhost:8787/auth/youtube/callback',
+    redirectUri: resolveRedirect(env, origin),
   };
 }
 
@@ -31,8 +60,13 @@ function scopes() {
   ].join(' ');
 }
 
-export function authUrl(env = process.env) {
-  const cfg = youtubeConfigFrom(env);
+export function authUrl(env = process.env, origin = null) {
+  const cfg = youtubeConfigFrom(env, origin);
+  if (!cfg.clientId || !cfg.clientSecret) {
+    const err = new Error('YouTube OAuth is not configured. Add YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET from your Google Cloud OAuth client (Settings → Cloud on Render), and register the redirect URI ' + cfg.redirectUri + ' under Authorized redirect URIs in the Google Cloud Console.');
+    err.code = 'youtube_not_configured';
+    throw err;
+  }
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     redirect_uri: cfg.redirectUri,
@@ -45,7 +79,7 @@ export function authUrl(env = process.env) {
   return `${AUTH_URL}?${params}`;
 }
 
-export async function exchangeCode(code, env = process.env) {
+export async function exchangeCode(code, redirectUri = null, env = process.env) {
   const cfg = youtubeConfigFrom(env);
   const res = await fetch(TOKEN_URL, {
     method: 'POST',
@@ -54,7 +88,7 @@ export async function exchangeCode(code, env = process.env) {
       code,
       client_id: cfg.clientId,
       client_secret: cfg.clientSecret,
-      redirect_uri: cfg.redirectUri,
+      redirect_uri: redirectUri || cfg.redirectUri,
       grant_type: 'authorization_code',
     }),
   });
