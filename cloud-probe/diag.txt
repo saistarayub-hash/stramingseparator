@@ -1,1 +1,9 @@
-run
+# diag 2026-09-21T06:48:44Z runner=runner repo=saistarayub-hash/stramingseparator secret-context=repository
+secrets.RENDER_API_KEY     len=0
+secrets.RENDER_KEY         len=0
+secrets.RENDER             len=0
+secrets.APPWRITE_API_KEY   len=0
+secrets.APPWRITE_PROJECT_ID len=0
+vars.RENDER_API_KEY        len=0
+---liveapp---
+{"configured":true,"active":false,"endpoint":"https://nyc.cloud.appwrite.io/v1","projectId":"6aaeab640039b9e4c8eb","apiKey":true,"databaseId":"streampilot","databaseIdConfigured":"streampilot","engine":"legacy","error":"API key needs more permissions — missing: collections.write. Fix: Appwrite console → your project → Overview → Integrations → API keys → create a key with \"Select all\" ticked (or every Database + Storage scope), then paste it into APPWRITE_API_KEY on Render and tap Retry.","errorKind":"auth","retry":"/api/cloud/retry"}
