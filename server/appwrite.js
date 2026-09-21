@@ -1,26 +1,30 @@
 // Appwrite integration — plug-and-play.
 //
-// Live demo endpoint: https://nyc.cloud.appwrite.io/v1
+// Live endpoint: https://nyc.cloud.appwrite.io/v1 (or your region subdomain).
 // You must supply a Project ID + API key (server key). Easiest: in the Appwrite
 // console → your project → Overview → Integrations → API keys → "Create API key"
-// and tick **Select all** (or at least the Databases/DocumentsDB + Storage scopes).
+// and tick **Select all** (or at least the Database + Storage scopes).
 //
 // The app auto-uses Appwrite when configured; otherwise it falls back to the
 // local JSON store so you can still try everything with zero setup.
 //
 // Auto-bootstrap creates (idempotently):
-//   Database  streampilot
-//   Collection videos / publishes / settings   (each stores a JSON 'payload')
-//   Bucket    videos                            (gameplay + clips)
+//   Database  streampilot_t (TablesDB) / streampilot_d (DocumentsDB) / streampilot (legacy)
+//   Table/collection videos / publishes / settings   (each stores a JSON 'payload')
+//   Bucket    videos                                  (gameplay + clips)
 //
-// IMPORTANT — Appwrite 2.x compatibility:
-//   Appwrite renamed its database product. The legacy "Databases/Collections"
-//   API (and its `collections.write` scope) is deprecated; new projects expose
-//   the modern **DocumentsDB** API with `documentsdb.*` scopes. This module
-//   tries DocumentsDB first and transparently falls back to the legacy
-//   Databases API, so it works with old keys AND new "Select all" keys.
+// ── Appwrite 2.x compatibility (the important bit) ─────────────────────────
+//   Appwrite ships THREE database products, each with its own scopes:
+//     • TablesDB    → tables.* / columns.* / rows.*      ← CURRENT product
+//     • DocumentsDB → documentsdb.*                       (separate product)
+//     • Databases   → collections.* / documents.* / attributes.*  ← DEPRECATED
+//   Modern "Select all" keys carry tables/columns/rows (and documentsdb), but
+//   NOT the deprecated collections.* scopes — which is why older StreamPilot
+//   builds kept failing with "missing scopes ([\"collections.write\"])".
+//   This build negotiates all three engines and uses whichever the key allows,
+//   preferring TablesDB (the current product).
 
-import { Client, Storage, Databases, DocumentsDB, ID, Permission, Role, Query } from 'node-appwrite';
+import { Client, Storage, Databases, DocumentsDB, TablesDB, ID, Permission, Role, Query } from 'node-appwrite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -33,17 +37,16 @@ const PUBLISHES_COLLECTION = 'publishes';
 const SETTINGS_COLLECTION = 'settings';
 export const VIDEOS_BUCKET = 'videos';
 
+const COLLECTIONS = [VIDEOS_COLLECTION, PUBLISHES_COLLECTION, SETTINGS_COLLECTION];
+
 let client = null;
 let sdk = null;
-// Which DB API won bootstrap: 'modern' (DocumentsDB) or 'legacy' (Databases).
+// Which engine won bootstrap: 'tables' | 'documentsdb' | 'legacy'.
 let dbMode = null;
-// The database id actually in use after bootstrap (may differ from the
-// configured id if the legacy engine already reserves it).
+// The database id actually in use after bootstrap.
 let activeDbId = null;
-// Capability probe results from the last bootstrap attempt — surfaced via
-// /api/cloud/status so permission gaps are visible at a glance.
-let lastProbe = { modern: null, legacy: null };
-let lastWrite = { modern: null, legacy: null };
+// Capability probe results from the last bootstrap attempt (per engine).
+let lastProbe = { tables: null, documentsdb: null, legacy: null };
 
 // Creds file lives next to the local store (data/appwrite.json).
 const CREDS_PATH = process.env.DATA_DIR
@@ -70,17 +73,17 @@ export function isConfigured() {
   return !!(c.projectId && c.apiKey);
 }
 
-/** Which DB API is active after bootstrap ('modern' | 'legacy' | null). */
+/** Which DB API is active after bootstrap ('tables' | 'documentsdb' | 'legacy' | null). */
 export function appwriteMode() {
   return dbMode;
 }
 
-/** The database id actually in use after bootstrap (may ≠ configured id). */
+/** The database id actually in use after bootstrap. */
 export function activeDatabaseId() {
   return activeDbId;
 }
 
-/** Which engine can this key actually use? ({modern, legacy} → 'full'|'blocked'|null) */
+/** Per-engine capability from the last bootstrap ({tables, documentsdb, legacy} → 'full'|'blocked'|null). */
 export function engineProbe() {
   return lastProbe;
 }
@@ -104,8 +107,9 @@ export function appwrite() {
   sdk = {
     client,
     storage: new Storage(client),
-    modern: new DocumentsDB(client), // Appwrite 2.x documents API
-    legacy: new Databases(client),   // pre-2.x collections API
+    tables: new TablesDB(client),   // current product (tables/columns/rows)
+    modern: new DocumentsDB(client), // documentsdb.*
+    legacy: new Databases(client),   // deprecated collections.*
     dbId: activeDbId || c.databaseId,
     endpoint: c.endpoint,
   };
@@ -116,110 +120,169 @@ export function appwrite() {
 export const publicRead = (...extra) => [Permission.read(Role.any()), ...extra];
 
 /* ------------------------------------------------------------------ helpers */
-function payloadOf(doc) {
-  if (!doc) return null;
-  try {
-    return typeof doc.payload === 'string' ? JSON.parse(doc.payload) : (doc.payload || {});
-  } catch { return {}; }
+function decode(record) {
+  // record is either a row's `.data`, or a document, both of shape { payload }.
+  const raw = record?.payload ?? record?.data?.payload;
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw === 'string') { try { return JSON.parse(raw); } catch { return {}; } }
+  return raw;
 }
 function recordToDoc(record) {
   return { payload: JSON.stringify(record ?? {}) };
-}
-
-// The single attribute shared by every collection: a JSON blob so the schema
-// never has to change when StreamPilot adds a field.
-const PAYLOAD_ATTR_LEGACY = ['payload', 65536];            // key, size (64 KB)
-const PAYLOAD_ATTR_MODERN = [{ key: 'payload', type: 'text', required: false }];
-
-/* ------------------------------------------------------------------ bootstrap */
-const EXTRA_DB_IDS = ['streampilot-2', 'streampilot-v2'];
-
-// Which configured database ids exist in each engine.
-async function pickDatabaseId(a) {
-  const found = { modern: null, legacy: null };
-  // 1) Prefer the configured id if either engine can see it.
-  for (const engine of ['modern', 'legacy']) {
-    try { await a[engine].get(a.dbId); found[engine] = a.dbId; }
-    catch { /* not visible */ }
-  }
-  // 2) Otherwise discover an existing id we created earlier (either engine).
-  for (const id of EXTRA_DB_IDS) {
-    for (const engine of ['modern', 'legacy']) {
-      if (found[engine]) continue;
-      try { await a[engine].get(id); found[engine] = id; }
-      catch { /* not visible */ }
-    }
-  }
-  return found;
 }
 
 function isAlreadyExists(e) {
   const hay = `${e.type || ''} ${e.code || ''} ${e.message || ''} ${e.response || ''}`;
   return /already[_ ]?exists|already exist|conflict|duplicate/i.test(hay) || e.code === 409;
 }
-
 function isAuthFailure(e) {
-  return (e && (e.type === 'general_unauthorized_scope' || e.code === 401));
+  return e && (e.type === 'general_unauthorized_scope' || e.code === 401 || /missing scopes/i.test(`${e.message || ''} ${e.response || ''}`));
+}
+function missingScopesFrom(e) {
+  const hay = `${e.message || ''} ${e.response || ''}`;
+  const out = [];
+  for (const m of hay.matchAll(/missing scopes \(\[([^\]]*)\]/g)) out.push(...m[1].replace(/\\?"/g, '').split(','));
+  return [...new Set(out.map((s) => s.trim()).filter(Boolean))];
 }
 
-async function engineAuth(a, engine) {
-  try {
-    await a[engine].list();
-    return 'full';
-  } catch (e) {
-    if (isAuthFailure(e)) return 'blocked';
-    throw e;
+function describeErr(e) {
+  const missing = missingScopesFrom(e);
+  if (missing.length || isAuthFailure(e)) {
+    return `API key needs permissions it doesn't have${missing.length ? ` (missing: ${missing.join(', ')})` : ''}`;
   }
+  return `${e?.message || e}`;
 }
 
-async function createDatabase(a, engine, id) {
-  if (engine === 'modern') await a.modern.create(id, id, true);
-  else await a.legacy.create(id, id, true);
-}
+/* ------------------------------------------------------------------ engine map */
+// Each engine: how to list/get/create its database, and a preferred id that
+// won't collide with the other engines' namespaces.
+const ENGINES = {
+  tables: {
+    dbIds: ['streampilot_t'],
+    async createDb(a, id) { await a.tables.create(id, id, true); },
+    async getDb(a, id) { await a.tables.get(id); },
+  },
+  documentsdb: {
+    dbIds: ['streampilot_d'],
+    async createDb(a, id) { await a.modern.create(id, id, true); },
+    async getDb(a, id) { await a.modern.get(id); },
+  },
+  legacy: {
+    dbIds: ['streampilot'],
+    async createDb(a, id) { await a.legacy.create(id, id, true); },
+    async getDb(a, id) { await a.legacy.get(id); },
+  },
+};
+const ENGINE_ORDER = ['tables', 'documentsdb', 'legacy'];
 
-// If a modern-capable key wants a fresh id (because "wanted" is locked by the
-// legacy engine), try to create/claim one of our alternate ids on modern.
-// Throws (with the underlying error) so callers can report it verbatim.
-async function tryModernPick(a, wanted) {
-  // Prefer to keep using the wanted id directly on modern if it's actually
-  // visible (shouldn't happen here, but be safe).
-  try { await a.modern.get(wanted); return { id: wanted, reused: true }; } catch { /* not visible */ }
-  let lastErr = null;
-  for (const id of EXTRA_DB_IDS) {
-    try { await a.modern.get(id); return { id, reused: true }; } catch { /* try creating it */ }
-    try { await a.modern.create(id, id, true); return { id, reused: false }; }
-    catch (e) {
-      if (isAlreadyExists(e)) return { id, reused: true };
-      lastErr = e;
-    }
-  }
-  throw (lastErr || new Error('modern engine could not create an alternate database id'));
-}
+// One 'payload' text column/attribute shared by every table/collection, so the
+// schema never changes when StreamPilot adds features.
+const PAYLOAD_COLUMN = [{ key: 'payload', type: 'text', required: false }];
 
-async function ensureModernCollection(a, name) {
-  try {
-    await a.modern.getCollection(a.dbId, name);
-    return false;
-  } catch (e) {
-    if (isAlreadyExists(e)) return false;
-    await a.modern.createCollection(a.dbId, ID.custom(name), name, publicRead(), false, true, PAYLOAD_ATTR_MODERN);
+async function ensureCollection(a, engine, name) {
+  if (engine === 'tables') {
+    try { await a.tables.getTable(a.dbId, name); return false; }
+    catch (e) { if (isAlreadyExists(e)) return false; }
+    await a.tables.createTable(a.dbId, ID.custom(name), name, publicRead(), false, true, PAYLOAD_COLUMN);
     return true;
   }
-}
-
-async function ensureLegacyCollection(a, name) {
-  try {
-    await a.legacy.getCollection(a.dbId, name);
-    return false;
-  } catch (e) {
-    if (isAlreadyExists(e)) return false;
-    await a.legacy.createCollection(a.dbId, ID.custom(name), name, publicRead());
-    try { await a.legacy.createStringAttribute(a.dbId, name, ...PAYLOAD_ATTR_LEGACY, false); }
-    catch { /* already exists */ }
+  if (engine === 'documentsdb') {
+    try { await a.modern.getCollection(a.dbId, name); return false; }
+    catch (e) { if (isAlreadyExists(e)) return false; }
+    await a.modern.createCollection(a.dbId, ID.custom(name), name, publicRead(), false, true, PAYLOAD_COLUMN);
     return true;
   }
+  // legacy
+  try { await a.legacy.getCollection(a.dbId, name); return false; }
+  catch (e) { if (isAlreadyExists(e)) return false; }
+  await a.legacy.createCollection(a.dbId, ID.custom(name), name, publicRead());
+  try { await a.legacy.createStringAttribute(a.dbId, name, 'payload', 65536, false); } catch { /* exists */ }
+  return true;
 }
 
+/* ------------------------------------------------------------------ data access (engine-agnostic) */
+function dataApi(a) {
+  return {
+    async list(name) {
+      const a2 = appwrite();
+      const dbId = a2.dbId;
+      if (dbMode === 'tables') {
+        const res = await a2.tables.listRows(dbId, name, [Query.limit(100)]);
+        return (res.rows || []).map((r) => decode(r));
+      }
+      if (dbMode === 'documentsdb') {
+        const res = await a2.modern.listDocuments(dbId, name, [Query.limit(100)]);
+        return (res.documents || []).map(decode);
+      }
+      const res = await a2.legacy.listDocuments(dbId, name, [Query.limit(100)]);
+      return (res.documents || []).map(decode);
+    },
+    async get(name, id) {
+      const a2 = appwrite();
+      try {
+        if (dbMode === 'tables') return decode(await a2.tables.getRow(a2.dbId, name, id));
+        if (dbMode === 'documentsdb') return decode(await a2.modern.getDocument(a2.dbId, name, id));
+        return decode(await a2.legacy.getDocument(a2.dbId, name, id));
+      } catch { return null; }
+    },
+    async set(name, id, record) {
+      const a2 = appwrite();
+      const doc = recordToDoc(record);
+      const existing = await this.get(name, id);
+      if (dbMode === 'tables') {
+        if (existing) return decode(await a2.tables.updateRow(a2.dbId, name, id, doc).then(() => this.get(name, id)));
+        return decode(await a2.tables.createRow(a2.dbId, name, id, doc, publicRead()).then(() => this.get(name, id)));
+      }
+      if (dbMode === 'documentsdb') {
+        if (existing) return decode(await a2.modern.updateDocument(a2.dbId, name, id, doc).then(() => this.get(name, id)));
+        return decode(await a2.modern.createDocument(a2.dbId, name, id, doc, publicRead()).then(() => this.get(name, id)));
+      }
+      if (existing) return decode(await a2.legacy.updateDocument(a2.dbId, name, id, doc).then(() => this.get(name, id)));
+      return decode(await a2.legacy.createDocument(a2.dbId, name, id, doc, publicRead()).then(() => this.get(name, id)));
+    },
+    async remove(name, id) {
+      const a2 = appwrite();
+      try {
+        if (dbMode === 'tables') await a2.tables.deleteRow(a2.dbId, name, id);
+        else if (dbMode === 'documentsdb') await a2.modern.deleteDocument(a2.dbId, name, id);
+        else await a2.legacy.deleteDocument(a2.dbId, name, id);
+      } catch { /* ignore */ }
+    },
+    async first(name) {
+      const list = await this.list(name);
+      return list[0] || null;
+    },
+    async upsertFirst(name, record) {
+      const a2 = appwrite();
+      const doc = recordToDoc(record);
+      const rows = await this.list(name);
+      const first = rows[0];
+      if (first) {
+        // find its raw id
+        const id = await this.firstId(name);
+        if (id) {
+          if (dbMode === 'tables') { await a2.tables.updateRow(a2.dbId, name, id, doc); return; }
+          if (dbMode === 'documentsdb') { await a2.modern.updateDocument(a2.dbId, name, id, doc); return; }
+          await a2.legacy.updateDocument(a2.dbId, name, id, doc);
+          return;
+        }
+      }
+      const newId = ID.unique();
+      if (dbMode === 'tables') await a2.tables.createRow(a2.dbId, name, newId, doc, publicRead());
+      else if (dbMode === 'documentsdb') await a2.modern.createDocument(a2.dbId, name, newId, doc, publicRead());
+      else await a2.legacy.createDocument(a2.dbId, name, newId, doc, publicRead());
+    },
+    async firstId(name) {
+      const a2 = appwrite();
+      if (dbMode === 'tables') { const r = await a2.tables.listRows(a2.dbId, name, [Query.limit(1)]); return r.rows?.[0]?.$id || null; }
+      if (dbMode === 'documentsdb') { const r = await a2.modern.listDocuments(a2.dbId, name, [Query.limit(1)]); return r.documents?.[0]?.$id || null; }
+      const r = await a2.legacy.listDocuments(a2.dbId, name, [Query.limit(1)]);
+      return r.documents?.[0]?.$id || null;
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ storage */
 async function ensureBucket() {
   const st = appwrite().storage;
   try {
@@ -227,177 +290,128 @@ async function ensureBucket() {
     return false;
   } catch {
     await st.createBucket(
-      VIDEOS_BUCKET,
-      VIDEOS_BUCKET,
-      publicRead(),
-      false,                // fileSecurity
-      true,                 // enabled
-      20 * 1024 * 1024 * 1024, // 20GB max file
-      [],                   // allowed extensions (all)
-      'none',               // compression
-      false,                // encryption
-      false,                // antivirus
+      VIDEOS_BUCKET, VIDEOS_BUCKET, publicRead(),
+      false, true, 20 * 1024 * 1024 * 1024, [], 'none', false, false,
     );
     return true;
   }
 }
 
+/* ------------------------------------------------------------------ bootstrap */
 /**
- * Create the schema if missing (idempotent). Safe to call on every boot.
- * Negotiates engine (modern DocumentsDB vs legacy Databases) and database id
- * based on what the API key can actually see/create — so it works with
- * Appwrite 2.x keys (documentsdb.* scopes) AND legacy keys (collections.*).
- * @returns {{created:string[], mode:string, databaseId:string}}
+ * Negotiate the engine the API key can actually write with, create the schema
+ * if missing (idempotent), then mark cloud ready. Prefers TablesDB (current
+ * product), falling back to DocumentsDB then the deprecated Databases API.
  */
 export async function bootstrap() {
   const a = appwrite();
   const created = [];
-  const wanted = a.dbId;
 
-  // ── decide engine + database id ─────────────────────────────────────────
-  const existing = await pickDatabaseId(a);
+  let chosen = null;
+  let phaseErr = {};
 
-  // Lightweight capability probe — tell us in plain English which API the key
-  // can actually use, before attempting any writes.
-  const probeModern = await engineAuth(a, 'modern').catch((e) => `unavailable: ${e.message || e}`);
-  const probeLegacy = await engineAuth(a, 'legacy').catch((e) => `unavailable: ${e.message || e}`);
-  lastProbe = { modern: probeModern, legacy: probeLegacy };
-
-  if (probeModern === 'blocked' && probeLegacy === 'blocked') {
-    throw Object.assign(new Error(
-      'The API key cannot read either Appwrite database API (it has NO database scopes).\n' +
-      'Fix: Appwrite console → your project → Overview → Integrations → API keys → ' +
-      'create a NEW key and tick every "Databases" + "DocumentsDB" + "Storage" scope. ' +
-      'Then paste it into APPWRITE_API_KEY on Render and redeploy.'
-    ), { code: 401, type: 'general_unauthorized_scope' });
-  }
-  const modernOk = probeModern === 'full';
-  const legacyOk = probeLegacy === 'full';
-
-  if (!existing.modern && !existing.legacy) {
-    // Fresh project: try modern first, then legacy.
-    try {
-      await createDatabase(a, 'modern', wanted);
-      dbMode = 'modern'; activeDbId = wanted;
-    } catch (e) {
+  outer:
+  for (const engine of ENGINE_ORDER) {
+    const cfg = ENGINES[engine];
+    let id = null;
+    // 1) settle on (or create) a database id for this engine
+    for (const cid of cfg.dbIds) {
       try {
-        await createDatabase(a, 'legacy', wanted);
-        dbMode = 'legacy'; activeDbId = wanted;
-      } catch (e2) {
-        throw Object.assign(new Error(
-          `Could not create Appwrite database "${wanted}" with either API.\n` +
-          `  modern (DocumentsDB): ${e.message || e}\n` +
-          `  legacy (Databases) : ${e2.message || e2}`),
-          { code: e2.code || e.code, type: e2.type || e.type, response: e2.response || e.response });
+        await cfg.getDb(a, cid);
+        id = cid;
+        break;
+      } catch (e) {
+        if (isAlreadyExists(e)) { id = cid; break; }
+        try {
+          await cfg.createDb(a, cid);
+          id = cid;
+          created.push('database:' + cid);
+          break;
+        } catch (e2) {
+          if (isAlreadyExists(e2)) { id = cid; break; }
+          phaseErr[engine] = phaseErr[engine] || e2;
+        }
       }
     }
-    a.dbId = activeDbId;
-    created.push('database:' + activeDbId);
-  } else if (existing.modern) {
-    // Modern engine can see a database — use it.
-    dbMode = 'modern'; activeDbId = existing.modern;
-    a.dbId = activeDbId;
-  } else {
-    // Only legacy can see a database. This is the tricky case: an earlier
-    // run created a *legacy* database under the wanted id, which now blocks
-    // the modern id namespace. If we're on a modern-capable key, put our
-    // data in a fresh id instead of fighting for the locked one.
-    const modernOk = async () => {
-      try { return await tryModernPick(a, wanted); } catch { return null; }
-    };
-    const altId = await modernOk();
-    if (altId) {
-      dbMode = 'modern'; activeDbId = altId;
-      a.dbId = activeDbId;
-      created.push('database:' + activeDbId);
-    } else {
-      dbMode = 'legacy'; activeDbId = existing.legacy;
-      a.dbId = activeDbId;
+    if (!id) { lastProbe[engine] = 'blocked'; continue; }
+
+    // 2) ensure all collections/tables are writable on this engine
+    try {
+      for (const name of COLLECTIONS) {
+        if (await ensureCollection(a, engine, name)) created.push(name);
+      }
+      dbMode = engine;
+      activeDbId = id;
+      a.dbId = id;
+      chosen = { engine, id };
+      lastProbe[engine] = 'full';
+      break outer;
+    } catch (e) {
+      lastProbe[engine] = 'blocked';
+      phaseErr[engine] = phaseErr[engine] || e;
     }
   }
 
-  // ── ensure collections on the chosen engine ─────────────────────────────
-  const ensureCol = dbMode === 'modern' ? ensureModernCollection : ensureLegacyCollection;
-  if (await ensureCol(a, VIDEOS_COLLECTION)) created.push(VIDEOS_COLLECTION);
-  if (await ensureCol(a, PUBLISHES_COLLECTION)) created.push(PUBLISHES_COLLECTION);
-  if (await ensureCol(a, SETTINGS_COLLECTION)) created.push(SETTINGS_COLLECTION);
+  for (const e of ENGINE_ORDER) {
+    if (!lastProbe[e] && chosen?.engine !== e) lastProbe[e] = 'blocked';
+    if (chosen?.engine === e) lastProbe[e] = 'full';
+  }
+
+  if (!chosen) {
+    const reasons = ENGINE_ORDER
+      .filter((e) => phaseErr[e])
+      .map((e) => `  ${e}: ${describeErr(phaseErr[e])}`)
+      .join('\n');
+    const err = phaseErr.tables || phaseErr.documentsdb || phaseErr.legacy || new Error('No usable engine');
+    throw Object.assign(new Error(
+      `Appwrite bootstrap failed — no database engine is writable with this API key.\n${reasons}\n` +
+      'Fix: Appwrite console → your project → Overview → Integrations → API keys → create a NEW key and tick the "Database" + "Storage" write scopes (tables.write, columns.write, rows.write, databases.write — or Select all). Then paste it into APPWRITE_API_KEY on Render and redeploy.'
+    ), { code: err.code, type: err.type, response: err.response });
+  }
 
   if (await ensureBucket()) created.push('bucket:' + VIDEOS_BUCKET);
 
   return { created, databaseId: activeDbId, endpoint: a.endpoint, mode: dbMode };
 }
 
-// Data-access: whichever API won bootstrap.
-function db() {
-  const a = appwrite();
-  return dbMode === 'modern' ? a.modern : a.legacy;
+/* ------------------------------------------------------------------ records */
+const api_ = () => dataApi(appwrite());
+
+function sortList(list) {
+  return (list || []).sort((x, y) => ((y?.createdAt || y?.at || '') > (x?.createdAt || x?.at || '') ? 1 : -1));
 }
 
-async function listAll(a, collection) {
-  const d = db();
-  const res = await d.listDocuments(a.dbId, collection, [Query.limit(100)]);
-  return (res.documents || []).map(payloadOf)
-    .sort((x, y) => ((y.createdAt || y.at || '') > (x.createdAt || x.at || '') ? 1 : -1));
-}
-
-/* ------------------------------------------------------------------ video records (cloud) */
 export const appVideos = {
-  async list() {
-    return listAll(appwrite(), VIDEOS_COLLECTION);
-  },
-  async get(id) {
-    try {
-      return payloadOf(await db().getDocument(appwrite().dbId, VIDEOS_COLLECTION, id));
-    } catch { return null; }
-  },
+  async list() { return sortList(await api_().list(VIDEOS_COLLECTION)); },
+  async get(id) { return api_().get(VIDEOS_COLLECTION, id); },
   async set(id, data) {
-    const a = appwrite();
-    const existing = await this.get(id).catch(() => null);
+    const existing = await this.get(id);
     const merged = { ...(existing || {}), ...data, id };
-    if (existing) {
-      return payloadOf(await db().updateDocument(a.dbId, VIDEOS_COLLECTION, id, recordToDoc(merged)));
-    }
-    return payloadOf(await db().createDocument(a.dbId, VIDEOS_COLLECTION, id, recordToDoc(merged), publicRead()));
+    return api_().set(VIDEOS_COLLECTION, id, merged);
   },
-  async remove(id) {
-    try { await db().deleteDocument(appwrite().dbId, VIDEOS_COLLECTION, id); } catch {}
-  },
+  async remove(id) { return api_().remove(VIDEOS_COLLECTION, id); },
 };
 
 export const appPublishes = {
-  async list() {
-    return listAll(appwrite(), PUBLISHES_COLLECTION);
-  },
+  async list() { return sortList(await api_().list(PUBLISHES_COLLECTION)); },
   async set(id, data) {
-    const a = appwrite();
-    const existing = await db().getDocument(a.dbId, PUBLISHES_COLLECTION, id).then(payloadOf).catch(() => null);
+    const existing = await api_().get(PUBLISHES_COLLECTION, id);
     const merged = { ...(existing || {}), ...data, id };
-    if (existing) {
-      return payloadOf(await db().updateDocument(a.dbId, PUBLISHES_COLLECTION, id, recordToDoc(merged)));
-    }
-    return payloadOf(await db().createDocument(a.dbId, PUBLISHES_COLLECTION, id, recordToDoc(merged), publicRead()));
+    return api_().set(PUBLISHES_COLLECTION, id, merged);
   },
 };
 
-/* ------------------------------------------------------------------ settings */
 export const appSettings = {
   async get() {
     try {
-      const res = await db().listDocuments(appwrite().dbId, SETTINGS_COLLECTION, [Query.limit(1)]);
-      const doc = res.documents[0];
-      if (!doc) return {};
-      const v = payloadOf(doc);
-      return { value: typeof v === 'object' ? v : {} };
+      const rec = await api_().first(SETTINGS_COLLECTION);
+      return { value: (rec && typeof rec === 'object') ? rec : {} };
     } catch { return {}; }
   },
   async set(patch) {
-    const a = appwrite();
     const cur = await this.get();
     const merged = { ...(cur.value || {}), ...patch };
-    const res = await db().listDocuments(a.dbId, SETTINGS_COLLECTION, [Query.limit(1)]);
-    const doc = res.documents[0];
-    if (doc) return await db().updateDocument(a.dbId, SETTINGS_COLLECTION, doc.$id, recordToDoc(merged));
-    return await db().createDocument(a.dbId, SETTINGS_COLLECTION, ID.unique(), recordToDoc(merged), publicRead([Permission.write(Role.any())]));
+    return api_().upsertFirst(SETTINGS_COLLECTION, merged);
   },
 };
 
@@ -412,7 +426,6 @@ export const appFiles = {
     await storage.createFile(bucket, fid, blob, publicRead());
     return { fileId: fid, bucket };
   },
-  /** Public download URL for a file id, valid for the bucket's public read. */
   viewUrl(fileId, bucket = VIDEOS_BUCKET) {
     return `${appwrite().endpoint}/storage/buckets/${bucket}/files/${fileId}/download?project=${process.env.APPWRITE_PROJECT_ID || appwriteConfig().projectId}`;
   },

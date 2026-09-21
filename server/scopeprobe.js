@@ -66,20 +66,19 @@ export async function probeScopes() {
   const checks = [];
   const add = (name, res) => checks.push({ name, ...verdict(res) });
 
-  // --- legacy Databases API ---
-  add('Database — read (databases.read)', await call(cfg, 'GET', '/databases'));
-  const ldb = await call(cfg, 'POST', '/databases', { databaseId: legacyDb, name: legacyDb });
-  add('Database — create (databases.write)', ldb);
-  if (ldb.ok) {
-    const lcol = await call(cfg, 'POST', `/databases/${legacyDb}/collections`, { collectionId: 'probe', name: 'probe' });
-    add('Collection — create (collections.write)', lcol);
-    if (lcol.ok) {
-      const lattr = await call(cfg, 'POST', `/databases/${legacyDb}/collections/probe/attributes/string`, { key: 'payload', size: 65536, required: false });
-      add('Attribute — create (attributes.write)', lattr);
-      const ldoc = await call(cfg, 'POST', `/databases/${legacyDb}/collections/probe/documents`, { documentId: 'probe1', data: { payload: '{}' } });
-      add('Document — create (documents.write)', ldoc);
+  // --- TablesDB (CURRENT product) ---
+  const tablesDb = `sp_probe_tbl_${stamp}`;
+  add('TablesDB — read (tables.read)', await call(cfg, 'GET', '/tablesdb'));
+  const tdb = await call(cfg, 'POST', '/tablesdb', { databaseId: tablesDb, name: tablesDb });
+  add('TablesDB — create (tables.write)', tdb);
+  if (tdb.ok) {
+    const ttbl = await call(cfg, 'POST', `/tablesdb/${tablesDb}/tables`, { tableId: 'probe', name: 'probe' });
+    add('TablesDB — table create (tables.write)', ttbl);
+    if (ttbl.ok) {
+      const trow = await call(cfg, 'POST', `/tablesdb/${tablesDb}/tables/probe/rows`, { rowId: 'probe1', data: { payload: '{}' } });
+      add('TablesDB — row create (rows.write)', trow);
     }
-    await call(cfg, 'DELETE', `/databases/${legacyDb}`).catch(() => {});
+    await call(cfg, 'DELETE', `/tablesdb/${tablesDb}`).catch(() => {});
   }
 
   // --- modern DocumentsDB API ---
