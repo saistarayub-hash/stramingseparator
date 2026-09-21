@@ -1,4 +1,3 @@
-# One-shot: which secrets/vars are visible to workflows?
 name: ops-diag
 on:
   push:
@@ -10,19 +9,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: report secret presence (lengths only, never values)
+      - name: report which secrets exist (lengths only)
         env:
-          S1: ${{ secrets.RENDER_API_KEY }}
-          S2: ${{ secrets.APPWRITE_API_KEY }}
-          S3: ${{ secrets.APPWRITE_PROJECT_ID }}
-          V1: ${{ vars.RENDER_API_KEY }}
+          A: ${{ secrets.RENDER_API_KEY }}
+          B: ${{ secrets.RENDER_KEY }}
+          C: ${{ secrets.RENDER }}
+          D: ${{ secrets.APPWRITE_API_KEY }}
+          E: ${{ secrets.APPWRITE_PROJECT_ID }}
+          V: ${{ vars.RENDER_API_KEY }}
         run: |
+          L(){ printf '%s' "$1" | wc -c; }
           {
-            echo "# diag $(date -u +%FT%TZ)"
-            echo "secrets.RENDER_API_KEY       len=$(( $(printf %s "$S1" | wc -c) ))"
-            echo "secrets.APPWRITE_API_KEY     len=$(( $(printf %s "$S2" | wc -c) ))"
-            echo "secrets.APPWRITE_PROJECT_ID  len=$(( $(printf %s "$S3" | wc -c) ))"
-            echo "vars.RENDER_API_KEY          len=$(( $(printf %s "$V1" | wc -c) ))"
+            echo "# diag $(date -u +%FT%TZ) runner=$(whoami) repo=${{ github.repository }} secret-context=repository"
+            echo "secrets.RENDER_API_KEY     len=$(L "$A")"
+            echo "secrets.RENDER_KEY         len=$(L "$B")"
+            echo "secrets.RENDER             len=$(L "$C")"
+            echo "secrets.APPWRITE_API_KEY   len=$(L "$D")"
+            echo "secrets.APPWRITE_PROJECT_ID len=$(L "$E")"
+            echo "vars.RENDER_API_KEY        len=$(L "$V")"
+            echo "---liveapp---"
+            curl -sS -m 20 https://streampilot-ttus.onrender.com/api/cloud/status || echo "LIVE APP UNREACHABLE"
           } | tee cloud-probe/diag.txt
       - name: commit
         run: |

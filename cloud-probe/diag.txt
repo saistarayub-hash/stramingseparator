@@ -1,5 +1,1 @@
-# diag 2026-09-21T06:45:16Z
-secrets.RENDER_API_KEY       len=0
-secrets.APPWRITE_API_KEY     len=0
-secrets.APPWRITE_PROJECT_ID  len=0
-vars.RENDER_API_KEY          len=0
+run
