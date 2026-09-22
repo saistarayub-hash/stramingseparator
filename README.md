@@ -199,8 +199,9 @@ an end-to-end smoke test (upload → analyze → fix, through Appwrite) and repo
   - or just flip **Auto-Deploy** on in Render — then every push self-deploys and the smoke
     test blocks on the new commit before verifying, with no secret at all.
 
-Plus a free scheduled **keep-warm** job pings `/api/status` every 10 minutes so the Render
+Plus a free scheduled **keep-warm** job pings `/api/status` every 5 minutes so the Render
 free tier never sleeps — so the app is always warm and monitored, all inside GitHub.
+(The cron lives on the default branch `main`, because GitHub only schedules from there.)
 
 ---
 
