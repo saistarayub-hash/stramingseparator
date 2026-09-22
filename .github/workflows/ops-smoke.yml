@@ -1,10 +1,12 @@
-# StreamPilot end-to-end smoke test — runs against the LIVE app from a runner.
-# Trigger: push any change to cloud-probe/smoke.trigger.txt. Commits the
-# secret-free report back to cloud-probe/smoketest.txt + report.json.
-name: ops-smoke
+# End-to-end smoke test against the LIVE app, two ways to fire it:
+#   • push & change cloud-probe/smoke.trigger.txt  (automated)
+#   • Run → Actions → "End-to-end smoke test" → "Run workflow"  (one-click, UI)
+# Commits a secret-free report to cloud-probe/smoketest.txt + report.json.
+name: end-to-end-smoke-test
 on:
   push:
     paths: ['cloud-probe/smoke.trigger.txt']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -12,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: run end-to-end smoke test
+      - name: run smoke test
         run: node scripts/smoketest.mjs 2>&1 | tee cloud-probe/smoketest.txt
       - name: commit report
         run: |
