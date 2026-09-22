@@ -51,9 +51,8 @@ function describeError(e) {
   if (uniq.length || e.type === 'general_unauthorized_scope') {
     return (
       `API key needs more permissions — missing: ${uniq.join(', ') || 'a required scope'}. ` +
-      'Fix: Appwrite console → your project → Overview → Integrations → API keys → create a key ' +
-      'with "Select all" ticked (or every Database + Storage scope), then paste it into ' +
-      'APPWRITE_API_KEY on Render and tap Retry.'
+      'Fix: Appwrite console → your project → Integrations → API keys → create a NEW key with ' +
+      '"Select all" ticked, then paste it into Settings → Cloud and hit Connect.'
     );
   }
 

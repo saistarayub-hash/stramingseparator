@@ -94,6 +94,7 @@ export function reloadCreds() {
   client = null;
   dbMode = null;
   activeDbId = null;
+  lastProbe = { tables: null, documentsdb: null, legacy: null };
 }
 
 /** Instantiate (lazily) or throw a friendly error. */
@@ -154,26 +155,50 @@ function describeErr(e) {
 }
 
 /* ------------------------------------------------------------------ engine map */
-// Each engine: how to list/get/create its database, and a preferred id that
-// won't collide with the other engines' namespaces.
+// Each engine: how to list/get/create/delete its databases.
+// `list` returns a DatabaseList ({ databases: [{ $id, name, type }] }).
 const ENGINES = {
   tables: {
-    dbIds: ['streampilot_t'],
-    async createDb(a, id) { await a.tables.create(id, id, true); },
-    async getDb(a, id) { await a.tables.get(id); },
+    list: (a) => a.tables.list(),
+    get: (a, id) => a.tables.get(id),
+    create: (a, id) => a.tables.create(id, id, true),
+    remove: (a, id) => a.tables.delete(id),
   },
   documentsdb: {
-    dbIds: ['streampilot_d'],
-    async createDb(a, id) { await a.modern.create(id, id, true); },
-    async getDb(a, id) { await a.modern.get(id); },
+    list: (a) => a.modern.list(),
+    get: (a, id) => a.modern.get(id),
+    create: (a, id) => a.modern.create(id, id, true),
+    remove: (a, id) => a.modern.delete(id),
   },
   legacy: {
-    dbIds: ['streampilot'],
-    async createDb(a, id) { await a.legacy.create(id, id, true); },
-    async getDb(a, id) { await a.legacy.get(id); },
+    list: (a) => a.legacy.list(),
+    get: (a, id) => a.legacy.get(id),
+    create: (a, id) => a.legacy.create(id, id, true),
+    remove: (a, id) => a.legacy.delete(id),
   },
 };
 const ENGINE_ORDER = ['tables', 'documentsdb', 'legacy'];
+
+// Database ids this app has ever created. Reused across reboots so we never
+// orphan a second database; and — because the Appwrite free plan permits only
+// ONE database per project — these are the *only* ids we'll ever auto-delete
+// when a stranded one is blocking the modern engine.
+const CANDIDATE_IDS = (() => {
+  const ids = ['streampilot', 'streampilot_t', 'streampilot_d'];
+  if (DB_ID && !ids.includes(DB_ID)) ids.unshift(DB_ID);
+  return [...new Set(ids)];
+})();
+
+function prettyId(engine) {
+  if (engine === 'tables') return 'streampilot_t';
+  if (engine === 'documentsdb') return 'streampilot_d';
+  return 'streampilot';
+}
+
+function isPlanLimitError(e) {
+  const hay = `${e?.type || ''} ${e?.code || ''} ${e?.message || ''} ${e?.response || ''}`;
+  return /maximum number of databases|database limit|additional_resource_not_allowed|plan has reached|limit.*reached/i.test(hay);
+}
 
 // One 'payload' text column/attribute shared by every table/collection, so the
 // schema never changes when StreamPilot adds features.
@@ -189,7 +214,9 @@ async function ensureCollection(a, engine, name) {
   if (engine === 'documentsdb') {
     try { await a.modern.getCollection(a.dbId, name); return false; }
     catch (e) { if (isAlreadyExists(e)) return false; }
-    await a.modern.createCollection(a.dbId, ID.custom(name), name, publicRead(), false, true, PAYLOAD_COLUMN);
+    // DocumentsDB is schemaless JSON — documents carry the `payload` field
+    // directly, no attributes/columns to define.
+    await a.modern.createCollection(a.dbId, ID.custom(name), name, publicRead(), false, true);
     return true;
   }
   // legacy
@@ -299,62 +326,44 @@ async function ensureBucket() {
 
 /* ------------------------------------------------------------------ bootstrap */
 /**
- * Negotiate the engine the API key can actually write with, create the schema
- * if missing (idempotent), then mark cloud ready. Prefers TablesDB (current
- * product), falling back to DocumentsDB then the deprecated Databases API.
+ * Negotiate the database the API key can actually write with, create the schema
+ * if missing (idempotent), then mark cloud ready.
+ *
+ * Order of preference: TablesDB (current product) → DocumentsDB → Legacy
+ * Databases (deprecated). On each engine:
+ *   1. REUSE a database the app already created (id matches our patterns).
+ *   2. REUSE any pre-existing database on this engine type when the key can't
+ *      create a new one (the free plan allows only ONE database per project,
+ *      so we must never assume we can spawn a fresh one — reusing the existing
+ *      one is what makes a free account work).
+ *   3. Otherwise CREATE a new database. If creation is rejected because the
+ *      plan's database quota is full, and the single blocking database is one
+ *      of OUR OWN stranded ids, reclaim (delete) it and retry once.
  */
 export async function bootstrap() {
   const a = appwrite();
   const created = [];
 
   let chosen = null;
-  let phaseErr = {};
+  const phaseErr = {};
 
-  outer:
   for (const engine of ENGINE_ORDER) {
-    const cfg = ENGINES[engine];
-    let id = null;
-    // 1) settle on (or create) a database id for this engine
-    for (const cid of cfg.dbIds) {
-      try {
-        await cfg.getDb(a, cid);
-        id = cid;
-        break;
-      } catch (e) {
-        if (isAlreadyExists(e)) { id = cid; break; }
-        try {
-          await cfg.createDb(a, cid);
-          id = cid;
-          created.push('database:' + cid);
-          break;
-        } catch (e2) {
-          if (isAlreadyExists(e2)) { id = cid; break; }
-          phaseErr[engine] = phaseErr[engine] || e2;
-        }
-      }
-    }
-    if (!id) { lastProbe[engine] = 'blocked'; continue; }
-
-    // 2) ensure all collections/tables are writable on this engine
     try {
+      const result = await settleDatabase(a, engine, created, phaseErr);
+      if (!result) { lastProbe[engine] = 'blocked'; continue; }
       for (const name of COLLECTIONS) {
         if (await ensureCollection(a, engine, name)) created.push(name);
       }
       dbMode = engine;
-      activeDbId = id;
-      a.dbId = id;
-      chosen = { engine, id };
+      activeDbId = result;
+      a.dbId = result;
+      chosen = { engine, id: result };
       lastProbe[engine] = 'full';
-      break outer;
+      break;
     } catch (e) {
       lastProbe[engine] = 'blocked';
       phaseErr[engine] = phaseErr[engine] || e;
     }
-  }
-
-  for (const e of ENGINE_ORDER) {
-    if (!lastProbe[e] && chosen?.engine !== e) lastProbe[e] = 'blocked';
-    if (chosen?.engine === e) lastProbe[e] = 'full';
   }
 
   if (!chosen) {
@@ -362,16 +371,94 @@ export async function bootstrap() {
       .filter((e) => phaseErr[e])
       .map((e) => `  ${e}: ${describeErr(phaseErr[e])}`)
       .join('\n');
-    const err = phaseErr.tables || phaseErr.documentsdb || phaseErr.legacy || new Error('No usable engine');
+    const err = phaseErr.tables || phaseErr.documentsdb || phaseErr.legacy || new Error('No usable database');
     throw Object.assign(new Error(
-      `Appwrite bootstrap failed — no database engine is writable with this API key.\n${reasons}\n` +
-      'Fix: Appwrite console → your project → Overview → Integrations → API keys → create a NEW key and tick the "Database" + "Storage" write scopes (tables.write, columns.write, rows.write, databases.write — or Select all). Then paste it into APPWRITE_API_KEY on Render and redeploy.'
+      `Appwrite bootstrap failed — no database is writable with this configuration.\n${reasons}\n` +
+      'Most likely fix: Appwrite console → your project (Databases tab) already contains a database; StreamPilot can reuse it — reconnect once from Settings → Cloud. If it lists no writable database, create one API key with "Select all" scopes, or delete the leftover database to free the free-plan single-database slot.'
     ), { code: err.code, type: err.type, response: err.response });
   }
 
   if (await ensureBucket()) created.push('bucket:' + VIDEOS_BUCKET);
 
   return { created, databaseId: activeDbId, endpoint: a.endpoint, mode: dbMode };
+}
+
+/** Find an id on `engine` we can use: reuse preferred, or existing, or create. */
+async function settleDatabase(a, engine, created, phaseErr) {
+  const sdkEng = ENGINES[engine];
+
+  // 1) Preferred, app-created ids first (cheap, no list call).
+  const preferred = engine === 'tables'
+    ? ['streampilot_t', 'streampilot']
+    : engine === 'documentsdb'
+      ? ['streampilot_d', 'streampilot']
+      : ['streampilot'];
+  for (const id of preferred) {
+    try {
+      await sdkEng.get(a, id);
+      return id;
+    } catch (e) {
+      if (isAlreadyExists(e)) return id;
+    }
+  }
+
+  // 2) Reuse an existing database OF THIS PRODUCT (a TablesDB call can't touch
+  //    a legacy database, and vice-versa). Only adopt a matching type.
+  const productType = { tables: 'tablesdb', documentsdb: 'documentsdb', legacy: 'legacy' }[engine];
+  let found = null;
+  try {
+    const list = await sdkEng.list(a);
+    const databases = list?.databases || [];
+    found = databases.find((d) => d.type === productType) || null;
+  } catch (e) {
+    // Listing may be scope-blocked (e.g. legacy keys without databases.read) —
+    // if so this engine cannot reveal or reuse anything; bail out.
+    if (isAuthFailure(e)) { phaseErr[engine] = phaseErr[engine] || e; return null; }
+  }
+  if (found) return found.$id;
+
+  // 3) Create a fresh database.
+  const id = prettyId(engine);
+  try {
+    await sdkEng.create(a, id);
+    created.push('database:' + id);
+    return id;
+  } catch (e) {
+    // Quota full? If one of OUR stranded ids can be deleted, reclaim it and retry.
+    if (isPlanLimitError(e)) {
+      const reclaimed = await reclaimStranded(a);
+      if (reclaimed) {
+        try {
+          await sdkEng.create(a, id);
+          created.push('database:' + id);
+          return id;
+        } catch (e2) {
+          phaseErr[engine] = phaseErr[engine] || e2;
+          return null;
+        }
+      }
+    }
+    phaseErr[engine] = phaseErr[engine] || e;
+    return null;
+  }
+}
+
+/** Delete one of our own stranded databases to free the free-plan slot. */
+async function reclaimStranded(a) {
+  // Only delete databases whose id matches an id WE created — never a stranger's.
+  for (const engine of ENGINE_ORDER) {
+    const sdkEng = ENGINES[engine];
+    try {
+      const list = await sdkEng.list(a);
+      const databases = list?.databases || [];
+      const stranded = databases.find((d) => CANDIDATE_IDS.includes(d.$id));
+      if (stranded) {
+        await sdkEng.remove(a, stranded.$id);
+        return stranded.$id;
+      }
+    } catch { /* try next engine */ }
+  }
+  return null;
 }
 
 /* ------------------------------------------------------------------ records */
