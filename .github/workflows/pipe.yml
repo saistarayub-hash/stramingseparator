@@ -35,6 +35,7 @@ jobs:
       - name: deploy to Render — wait until live + verified
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
           DEPLOY_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
         run: |
           set -o pipefail

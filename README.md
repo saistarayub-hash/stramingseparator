@@ -190,9 +190,14 @@ an end-to-end smoke test (upload → analyze → fix, through Appwrite) and repo
 
 - **Report-only (works now, zero secrets):** the pipeline checks out, runs the smoke test
   against `https://streampilot-ttus.onrender.com`, and commits the results to `cloud-probe/`.
-- **Fully hands-off (one-time, optional):** add a **`RENDER_API_KEY`** repo secret
-  (GitHub → Settings → Secrets and variables → Actions), OR flip **Auto-Deploy** on in Render.
-  Then *every push deploys itself and the smoke test blocks on the new commit before verifying*.
+- **Fully hands-off (one-time, optional):** add ONE repo secret (GitHub → Settings →
+  Secrets and variables → Actions):
+  - **easiest** — `RENDER_DEPLOY_HOOK_URL`: Render → your service → Settings → **Deploy
+    Hook** → copy the URL. It's a single click-to-copy secret that triggers a deploy.
+  - **fullest** — `RENDER_API_KEY`: Render → Account Settings → **API Keys**. Lets the
+    pipeline also wait for the deploy to finish, align the branch, and clear the cache.
+  - or just flip **Auto-Deploy** on in Render — then every push self-deploys and the smoke
+    test blocks on the new commit before verifying, with no secret at all.
 
 Plus a free scheduled **keep-warm** job pings `/api/status` every 10 minutes so the Render
 free tier never sleeps — so the app is always warm and monitored, all inside GitHub.

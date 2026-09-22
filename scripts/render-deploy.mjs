@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 // Trigger a Render deploy and WAIT until it is live (or failed), then verify
-// the live app answers. Runs on a GitHub runner (needs secrets.RENDER_API_KEY).
+// the live app answers. Runs on a GitHub runner.
 //
 //   node scripts/render-deploy.mjs
+//
+// Two credential paths, in priority order:
+//   1. secrets.RENDER_API_KEY        — full Render API: find service, align
+//      branch, trigger deploy, POLL it to 'live', verify /api/status.
+//   2. secrets.RENDER_DEPLOY_HOOK_URL — simplest: one secret URL from Render →
+//      Settings → Deploy Hook. Fire it (optionally pinning the branch) and
+//      immediately return; the subsequent smoke-test step verifies the new
+//      commit came live via /api/status.gitCommit.
+//   3. neither                       — skip (report-only), still run smoke test.
 //
 // Writes a SECRET-FREE report to cloud-probe/deploy.txt + deploy.json, and
 // exports the detected app URL as APP_URL for any later step via $GITHUB_ENV.
 //
-// Exit codes: 0 = deployed & verified (or skipped: no RENDER_API_KEY),
-//             1 = deploy failed / timed out / unverifiable.
+// Exit codes: 0 = deployed/triggered/verified (or skipped), 1 = hard failure.
 import fs from 'node:fs';
 
 const KEY = process.env.RENDER_API_KEY || '';
+const HOOK = process.env.RENDER_DEPLOY_HOOK_URL || '';
 const SERVICE_RE = /streampilot/i;
 // Which branch the service must build. Defaults to the branch the runner
 // checked out (GITHUB_REF_NAME), else the session branch.
@@ -71,10 +80,36 @@ async function verifyApp(url) {
 
 async function main() {
   report.renderKeyPresent = !!KEY;
+  report.renderHookPresent = !!HOOK;
+
+  // -- Path 2: deploy hook URL (simplest credential). Fire-and-return: the
+  //    hook triggers a deploy of the service's pinned branch (optionally
+  //    ref=<branch>); the smoke test later waits for the new commit.
+  if (!KEY && HOOK) {
+    const ref = process.env.DEPLOY_BRANCH || process.env.GITHUB_REF_NAME || '';
+    let url = HOOK;
+    try {
+      const u = new URL(HOOK);
+      if (ref && !u.searchParams.has('ref')) u.searchParams.set('ref', ref);
+      url = u.toString();
+    } catch { /* not a valid URL; use as-is */ }
+    const res = await fetch(url, { method: 'POST' }).catch((e) => ({ status: 0, text: String(e && e.message) }));
+    const body = typeof res.text === 'function' ? await res.text().catch(() => '') : res.text || '';
+    report.deployHook = { http: res.status || 0, body: body.slice(0, 140) };
+    const ok = res.status === 200 || res.status === 202;
+    log(`deploy hook fired: HTTP ${res.status}${ok ? '' : ' — ' + body.slice(0, 120)}`);
+    report.deployed = ok;
+    report.reason = ok ? 'deploy hook fired' : `deploy hook HTTP ${res.status}`;
+    const genv = process.env.GITHUB_ENV;
+    if (genv) { try { fs.appendFileSync(genv, `APP_URL=${process.env.APP_URL || 'https://streampilot-ttus.onrender.com'}\n`); } catch {} }
+    write();
+    process.exit(ok ? 0 : 1);
+  }
+
   if (!KEY) {
     log('RENDER_API_KEY not set — deploy skipped (will still run the smoke test).');
     report.deployed = false;
-    report.reason = 'no RENDER_API_KEY secret';
+    report.reason = 'no RENDER_API_KEY / RENDER_DEPLOY_HOOK_URL secret';
     write();
     process.exit(0);
   }
