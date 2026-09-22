@@ -177,10 +177,25 @@ Appwrite keys.
 
 | Want | Do |
 |---|---|
-| App live at home quickly | `npm install` then `npm start` → `http://localhost:8787` |
+| App live at home quickly | `npm install` then `npm start` → `http://localhost:8787` | 
 | App online for free (one button) | ⬆ the Deploy to Render button above |
 | ALWAYS-on, free forever, real disk | Oracle "Always Free" VM → 2 commands, below |
 | Free https + your own name | the HTTPS script, below |
+
+### 🤖 Fully automatic updates (no clicks after setup)
+
+The repo already runs a **deploy-and-verify** GitHub Actions pipeline: every push to the
+`arena/01a0ba1a-stramingseparator` branch deploys to Render, waits for it to go live, then runs
+an end-to-end smoke test (upload → analyze → fix, through Appwrite) and reports on the run.
+
+- **Report-only (works now, zero secrets):** the pipeline checks out, runs the smoke test
+  against `https://streampilot-ttus.onrender.com`, and commits the results to `cloud-probe/`.
+- **Fully hands-off (one-time, optional):** add a **`RENDER_API_KEY`** repo secret
+  (GitHub → Settings → Secrets and variables → Actions), OR flip **Auto-Deploy** on in Render.
+  Then *every push deploys itself and the smoke test blocks on the new commit before verifying*.
+
+Plus a free scheduled **keep-warm** job pings `/api/status` every 10 minutes so the Render
+free tier never sleeps — so the app is always warm and monitored, all inside GitHub.
 
 ---
 
