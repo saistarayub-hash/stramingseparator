@@ -1,11 +1,11 @@
-StreamPilot smoke test — 2026-09-22T10:00:57.021Z
+StreamPilot smoke test — 2026-09-22T10:18:27.655Z
 base: https://streampilot-ttus.onrender.com
 
 PASS GET /api/status → ok — {"ok":true,"cloud":"appwrite","appwriteConfigured":true}
 PASS cloud active — {"configured":true,"active":true,"endpoint":"https://nyc.cloud.appwrite.io/v1","projectId":"6aaeab640039b9e4c8eb","apiKey":true,"apiKeyTail":"c915d6","databaseId":"streampilot","databaseIdConfigured":"streampilot","engine":"tables","engines":{"tables":"full","documentsdb":null,"legacy":null},"error":null,"errorKind":null,"retry":null}
 PASS cloud engine = tables — engine=tables
 PASS cloud error empty — error=(none)
-PASS GET /api/videos — count=1
+PASS GET /api/videos — count=2
 PASS GET /api/settings — {"youtubeToken":false}
 PASS GET /api/publishes — count=0
 PASS GET /api/connections — platforms=youtube:off,tiktok:off,twitch:off,kick:off
