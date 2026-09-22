@@ -1,0 +1,35 @@
+# Keep StreamPilot warm + monitor it for free, forever.
+# Render's free web service sleeps after ~15 min of no traffic. This scheduled
+# job pings the live app every 10 minutes (public repo = unlimited Actions
+# minutes) so it never sleeps, and fails loudly (red Actions run + email badge)
+# if the app or cloud ever goes down. No secrets, no repo commits.
+name: keep-warm
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ping live app (3 attempts)
+        run: |
+          URL="https://streampilot-ttus.onrender.com/api/status"
+          for i in 1 2 3; do
+            CODE=$(curl -sS -m 25 -o /dev/null -w '%{http_code}' "$URL" 2>/dev/null || echo FAIL)
+            if [ "$CODE" = "200" ]; then
+              echo "keep-warm OK (attempt $i): $CODE"
+              exit 0
+            fi
+            echo "attempt $i got: ${CODE}"; sleep 8
+          done
+          echo "KEEP-WARM FAILED: app unreachable" >&2
+          exit 1
+      - name: verify cloud is attached
+        run: |
+          BODY=$(curl -sS -m 25 "https://streampilot-ttus.onrender.com/api/cloud/status" 2>/dev/null || echo '{}')
+          echo "$BODY"
+          echo "$BODY" | grep -q '"active":true' || { echo "CLOUD NOT ACTIVE" >&2; exit 1; }
+          echo "cloud gate: ACTIVE"

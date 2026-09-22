@@ -1,0 +1,25 @@
+version: "3.9"
+
+# StreamPilot — `docker compose up -d` on any machine (Oracle Free / VPS / laptop).
+services:
+  streampilot:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8787}:8787"
+    env_file:
+      - .env
+    environment:
+      PORT: 8787
+      DATA_DIR: /app/data
+      APP_URL: ${APP_URL:-http://localhost:8787}
+    volumes:
+      - streampilot-data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8787/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  streampilot-data:

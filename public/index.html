@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>StreamPilot — your cross-platform autopilot</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">🎮</div>
+      <div><h1>StreamPilot</h1><small>game once · post everywhere</small></div>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" data-view="library"><span class="ico">🎬</span> Library</div>
+      <div class="nav-item" data-view="liveclips"><span class="ico">✂️</span> Live Clips</div>
+      <div class="nav-item" data-view="publish"><span class="ico">📤</span> Publish</div>
+      <div class="nav-item" data-view="autopilot"><span class="ico">🤖</span> Live Autopilot</div>
+      <div class="nav-item" data-view="connections"><span class="ico">🔗</span> Connections</div>
+      <div class="nav-item" data-view="settings"><span class="ico">⚙️</span> Settings</div>
+    </nav>
+    <div class="cloud-pill" id="cloud-pill"><span class="led"></span><span id="cloud-pill-text">Cloud: local mode</span></div>
+    <div class="foot">
+      Upload → auto-fix → clip → post to every platform.<br/>
+      Backed by Appwrite cloud or local storage.
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- LIBRARY -->
+    <section class="view active" id="view-library">
+      <h2 class="page-title">🎬 Library</h2>
+      <p class="page-sub">Drop in your gameplay — we analyze it, fix the sound & format, and cut vertical clips for Shorts/TikTok.</p>
+
+      <div class="dropzone" id="dropzone">
+        <div class="big">⬆️</div>
+        <h3>Drop your gameplay video here</h3>
+        <p>or click to browse · MP4, MKV, MOV, WebM · big files welcome</p>
+      </div>
+      <input type="file" id="file-input" accept="video/*" hidden />
+      <div id="upload-status"></div>
+
+      <div class="h3" id="library-count"></div>
+      <div class="grid" id="library-grid"></div>
+      <div id="library-empty" style="display:flex; align-items:center; justify-content:center; padding:70px 0; color:var(--dim); flex-direction:column; gap:8px;">
+        <div style="font-size:40px">🗂️</div>
+        No videos yet. Upload your first gameplay clip above.
+      </div>
+
+      <!-- DETAIL overlays in-line -->
+      <div class="detail" id="detail">
+        <div class="detail-head">
+          <div class="thumb" id="detail-thumb"></div>
+          <div style="flex:1">
+            <h2 id="detail-name"></h2>
+            <span class="badge badge-info" id="detail-stage"></span>
+          </div>
+          <button class="close" id="detail-close">✕</button>
+        </div>
+
+        <div class="preview-wrap">
+          <video class="preview" id="video-preview" controls></video>
+        </div>
+
+        <div class="progress-wrap" id="progress-wrap">
+          <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+        </div>
+
+        <div class="kv-grid" id="detail-info"></div>
+
+        <div class="h3">🩺 Integrity check</div>
+        <div id="detail-issues"></div>
+
+        <div class="actions-row" id="detail-actions"></div>
+
+        <div id="highlights"></div>
+        <div id="captions-box" style="display:none"></div>
+        <div id="copy-box" style="display:none"></div>
+        <div id="clips-made" style="display:none"></div>
+      </div>
+    </section>
+
+    <!-- LIVE CLIPS -->
+    <section class="view" id="view-liveclips">
+      <h2 class="page-title">✂️ Live Clips</h2>
+      <p class="page-sub">Streaming on PS5 or YouTube Live? Capture it here and clip Shorts/TikToks <b>mid-stream</b>.</p>
+
+      <div class="panel">
+        <h3>1 · Choose your live source</h3>
+        <div class="live-source-list" id="live-source-list">
+          <label class="live-source-radio sel">
+            <input type="radio" name="livesrc" value="url" checked />
+            <div><div class="t">🎥 Stream URL / YouTube Live</div><div class="d">Live id, m3u8, RTMP… (recorded by this server)</div></div>
+          </label>
+          <label class="live-source-radio">
+            <input type="radio" name="livesrc" value="tiktok" />
+            <div><div class="t">📱 TikTok — stream from your phone</div><div class="d">Go live in the TikTok app on your phone, paste your @username here</div></div>
+          </label>
+          <label class="live-source-radio">
+            <input type="radio" name="livesrc" value="ps5" />
+            <div><div class="t">🎮 PlayStation 5</div><div class="d">Remote-play relay from your PS5 — no capture card (same LAN)</div></div>
+          </label>
+        </div>
+
+        <div class="row" style="margin-top:12px">
+          <div class="field" id="live-url-field">
+            <label>Stream URL or YouTube video id</label>
+            <input class="input" id="live-url" placeholder="dQw4w9WgXcQ or https://…/index.m3u8" />
+          </div>
+          <div class="field" id="live-tiktok-field" style="display:none">
+            <label>TikTok @username or profile link</label>
+            <input class="input" id="live-tiktok-user" placeholder="@yourchannel or tiktok.com/@yourchannel/live" />
+          </div>
+          <div class="field" id="live-ps5-field" style="display:none">
+            <label>PS5 Account-ID <span style="color:var(--dim)">(from Remote Play → Link Device)</span></label>
+            <input class="input" id="live-ps5-acc" placeholder="0000000000000000" />
+          </div>
+          <button class="btn" id="live-check-btn" style="align-self:flex-end; display:none">🔍 Check if live</button>
+          <button class="btn btn-primary" id="live-record-btn" style="align-self:flex-end">● Start recording</button>
+        </div>
+        <div class="hint" id="live-hint" style="display:none">Recording… the buffer holds the last ~30s.</div>
+      </div>
+
+      <div class="panel">
+        <h3>2 · Clip a moment (as it happens)</h3>
+        <div class="map-row" id="live-timeline" style="margin-bottom:14px">
+          <div class="map-chip"><span class="k">◀ 30s</span><span class="v">longer ago</span></div>
+          <div class="map-chip hot" data-offset="25"><span class="k">25s</span><span class="v">⚡ ideal</span></div>
+          <div class="map-chip" data-offset="20"><span class="k">20s</span></div>
+          <div class="map-chip" data-offset="15"><span class="k">15s</span></div>
+          <div class="map-chip" data-offset="10"><span class="k">10s</span></div>
+          <div class="map-chip" data-offset="5"><span class="k">now</span><span class="v">5s</span></div>
+        </div>
+        <div class="row" style="margin-bottom:12px">
+          <div class="field"><label>Clip title (lower-third, optional)</label><input class="input" id="live-clip-title" placeholder="THAT CLUTCH 😱" /></div>
+          <div class="field" style="max-width:160px"><label>Length</label>
+            <select class="input" id="live-clip-dur"><option>10</option><option selected>15</option><option>20</option><option>30</option><option>45</option><option>60</option></select>
+          </div>
+        </div>
+        <div class="row" style="margin-bottom:12px">
+          <label class="checkbox-row"><input type="checkbox" id="live-clip-caption" checked /> Auto-captions (local Whisper)</label>
+          <label class="checkbox-row"><input type="checkbox" id="live-clip-vertical" checked /> Vertical (9:16)</label>
+          <button class="btn btn-primary" id="live-cut-btn">✂️ Cut the last moment</button>
+          <button class="btn" id="live-auto-btn" style="background:linear-gradient(135deg,#22d3ee,#8b5cf6); border:none; color:white;">✨ Auto-edit it</button>
+        </div>
+        <div class="ghost-note" style="margin-bottom:12px">
+          💬 <b>Chat trigger:</b> turn on Live Autopilot and anyone typing <b>!clip</b> (or <b>!clip 30s THAT PLAY</b>) auto-cuts, auto-captions and auto-writes the title + description + hashtags — with no touching.
+        </div>
+        <div class="live-console" id="live-console">Ready. Start a recording to begin clipping.</div>
+        <div id="live-cut-history"></div>
+      </div>
+    </section>
+
+    <!-- PUBLISH -->
+    <section class="view" id="view-publish">
+      <h2 class="page-title">📤 Publish everywhere</h2>
+      <p class="page-sub">Post the long video to YouTube and the vertical clips to TikTok — from one screen.</p>
+
+      <div class="panel" id="yt-connect"><!-- filled by JS --></div>
+
+      <div class="panel">
+        <h3>New publish</h3>
+        <form id="publish-form">
+          <div class="row" style="margin-bottom:12px">
+            <div class="field"><label>Video</label><select class="input" id="pub-video"></select></div>
+            <div class="field"><label>Title</label><input class="input" id="pub-title" placeholder="My best match yet — #gaming" /></div>
+          </div>
+          <div class="row" style="margin-bottom:12px">
+            <div class="field"><label>Tags (comma separated)</label><input class="input" id="pub-tags" placeholder="gaming, fortnite, highlight" /></div>
+            <div class="field"><label>Privacy</label>
+              <select class="input" id="pub-privacy">
+                <option value="private">Private</option>
+                <option value="unlisted">Unlisted</option>
+                <option value="public">Public</option>
+              </select>
+            </div>
+          </div>
+          <div class="row" style="margin-bottom:12px">
+            <label class="checkbox-row"><input type="checkbox" id="pub-to-youtube" checked /> Send to YouTube</label>
+            <label class="checkbox-row"><input type="checkbox" id="pub-to-tiktok" /> Send clips to TikTok</label>
+          </div>
+          <button class="btn btn-primary" id="pub-submit" type="submit">🚀 Publish now</button>
+        </form>
+        <div id="publish-progress"></div>
+      </div>
+
+      <div id="publish-history"></div>
+    </section>
+
+    <!-- AUTOPILOT -->
+    <section class="view" id="view-autopilot">
+      <h2 class="page-title">🤖 Live Autopilot</h2>
+      <p class="page-sub">Answer fans on YouTube + TikTok + Twitch + Kick simultaneously — greetings, FAQs, and !clip commands, all automatic. (Link channels in <b>Connections</b> first.)</p>
+
+      <div class="panel">
+        <div class="status-line">
+          <span id="ap-status">⏸ Autopilot off</span>
+          <span id="ap-autopilot-toggle" style="color:var(--dim); font-size:12px"></span>
+        </div>
+        <div class="row" style="margin-bottom:12px">
+          <div class="field"><label>YouTube video/live ID</label><input class="input" id="ap-yt-id" placeholder="e.g. dQw4w9WgXcQ" /></div>
+          <div class="field"><label>TikTok @username</label><input class="input" id="ap-tt-user" placeholder="yourchannel" /></div>
+          <div class="field"><label>Twitch channel</label><input class="input" id="ap-twitch-ch" placeholder="yourtwitch" /></div>
+          <div class="field"><label>Kick channel</label><input class="input" id="ap-kick-ch" placeholder="yourkick" /></div>
+          <button class="btn btn-primary" id="ap-run" style="align-self:flex-end">▶ Start autopilot</button>
+        </div>
+        <div class="row" style="color:var(--dim); font-size:12px; gap:20px">
+          <span id="ap-youtube-state">YouTube: not connected</span>
+          <span id="ap-tiktok-state">TikTok: not connected</span>
+          <span id="ap-twitch-state">Twitch: not connected</span>
+          <span id="ap-kick-state">Kick: not connected</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Manual quick reply</h3>
+        <div class="row">
+          <div class="field"><input class="input" id="ap-say" placeholder="Type a message to send as the bot…" /></div>
+          <select class="input" id="ap-say-platform" style="max-width:130px">
+            <option value="youtube">YouTube</option>
+            <option value="tiktok">TikTok</option>
+            <option value="twitch">Twitch</option>
+            <option value="kick">Kick</option>
+          </select>
+          <button class="btn" id="ap-say-btn">Send</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Activity feed</h3>
+        <div class="feed" id="ap-feed"></div>
+      </div>
+    </section>
+
+    <!-- CONNECTIONS -->
+    <section class="view" id="view-connections">
+      <h2 class="page-title">🔗 Connections</h2>
+      <p class="page-sub">Link your channels once — then one click posts everywhere and one autopilot watches every chat.</p>
+
+      <div class="conn-grid" id="conn-grid"><!-- platform cards injected by JS --></div>
+
+      <div class="conn-detail" id="conn-detail"><!-- expand per-platform forms --></div>
+
+      <div class="panel">
+        <h3>✅ What you can connect</h3>
+        <div class="ghost-note">
+          <b>YouTube</b> — Google OAuth for uploads + live-chat autopilot · <b>TikTok</b> — live capture & chat from your phone (@username) ·
+          <b>Twitch</b> — channel chat via tmi.js (anonymous read works instantly; add a bot token to auto-reply) · <b>Kick</b> — channel chat read-only (Pusher) ·
+          <b>Coming next</b> — Instagram, X (Twitter), Discord, Facebook Gaming. Tell us which you want first!
+        </div>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings">
+      <h2 class="page-title">⚙️ Settings</h2>
+      <p class="page-sub">Cloud, autopilot personality, platforms. Everything saves as you go.</p>
+
+      <div class="panel">
+        <h3>☁️ Cloud — Appwrite</h3>
+        <div class="cloud-status-card" id="cloud-status-card">
+          <div class="big"><span class="led"></span><span id="cloud-status-text">Checking cloud connection…</span></div>
+          <div class="sub" id="cloud-status-sub"></div>
+          <div class="sub" id="cloud-status-err" style="display:none; color:var(--red); margin-top:8px;"></div>
+          <div id="cloud-scopes"></div>
+        </div>
+        <form id="cloud-form">
+          <div class="settings-grid">
+            <div class="field full"><label>Appwrite endpoint</label>
+              <input class="input" id="cloud-endpoint" placeholder="https://nyc.cloud.appwrite.io/v1" /></div>
+            <div class="field"><label>Project ID</label>
+              <input class="input" id="cloud-project" placeholder="your project id" /></div>
+            <div class="field"><label>API key (server key)</label>
+              <input class="input" id="cloud-key" placeholder="standard_…" type="password" /></div>
+            <div class="field full">
+              <div class="ghost-note">🏗️ <b>One-click setup:</b> paste your Appwrite <b>Project ID</b> + <b>API key</b> and hit <b>Connect</b>. StreamPilot auto-negotiates the right database engine (TablesDB → DocumentsDB → Legacy) and auto-creates the database, tables/collections and a storage bucket ("videos") on your Appwrite project — no manual schema work.</div>
+            </div>
+          </div>
+          <div class="actions-row">
+            <button class="btn btn-primary" id="cloud-connect" type="submit">🔗 Connect to Appwrite</button>
+            <button class="btn btn-danger" id="cloud-disconnect" type="button">Disconnect</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h3>Autopilot personality</h3>
+        <form id="settings-form">
+          <div class="settings-grid">
+            <div class="field"><label>Game you usually play</label><input class="input" id="set-game" placeholder="Fortnite" /></div>
+            <div class="field"><label>Stream schedule</label><input class="input" id="set-schedule" placeholder="Mon–Fri 19:00" /></div>
+            <div class="field"><label>Social links (one line)</label><input class="input" id="set-socials" placeholder="YT / TikTok / IG / Discord" /></div>
+            <div class="field"><label>Donation link</label><input class="input" id="set-donation" placeholder="https://…" /></div>
+            <div class="field full"><label>Custom FAQs (one per line: question :: answer)</label>
+              <textarea class="input" id="set-faqs" rows="5" placeholder="what rank are you? :: Diamond 2&#10;whats your sens? :: 0.35 at 800dpi"></textarea></div>
+            <div class="field full checkbox-row"><input type="checkbox" id="set-autopilot" checked /> <span>Enable auto-replies</span></div>
+          </div>
+          <div class="actions-row"><button class="btn btn-primary" type="submit">💾 Save settings</button></div>
+        </form>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div id="toasts"></div>
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,79 @@
+{
+  "at": "2026-09-22T20:04:47.200Z",
+  "base": "https://streampilot-ttus.onrender.com",
+  "passes": 12,
+  "fails": 1,
+  "skips": 1,
+  "results": [
+    {
+      "name": "live commit tracked",
+      "status": "SKIP",
+      "details": "SKIP: live app predates gitCommit reporting"
+    },
+    {
+      "name": "GET /api/status → ok",
+      "status": "PASS",
+      "details": "{\"ok\":true,\"cloud\":\"appwrite\",\"appwriteConfigured\":true}"
+    },
+    {
+      "name": "cloud active",
+      "status": "PASS",
+      "details": "{\"configured\":true,\"active\":true,\"endpoint\":\"https://nyc.cloud.appwrite.io/v1\",\"projectId\":\"6aaeab640039b9e4c8eb\",\"apiKey\":true,\"apiKeyTail\":\"c915d6\",\"databaseId\":\"streampilot\",\"databaseIdConfigured\":\"streampilot\",\"engine\":\"tables\",\"engines\":{\"tables\":\"full\",\"documentsdb\":null,\"legacy\":null},\"error\":null,\"errorKind\":null,\"retry\":null}"
+    },
+    {
+      "name": "cloud engine = tables",
+      "status": "PASS",
+      "details": "engine=tables"
+    },
+    {
+      "name": "cloud error empty",
+      "status": "PASS",
+      "details": "error=(none)"
+    },
+    {
+      "name": "GET /api/videos",
+      "status": "PASS",
+      "details": "count=7"
+    },
+    {
+      "name": "GET /api/settings",
+      "status": "PASS",
+      "details": "{\"youtubeToken\":false}"
+    },
+    {
+      "name": "GET /api/publishes",
+      "status": "PASS",
+      "details": "count=0"
+    },
+    {
+      "name": "GET /api/connections",
+      "status": "PASS",
+      "details": "platforms=youtube:off,tiktok:off,twitch:off,kick:off"
+    },
+    {
+      "name": "GET /api/autopilot/status",
+      "status": "PASS",
+      "details": "running=false"
+    },
+    {
+      "name": "GET /api/liveclip/status",
+      "status": "PASS",
+      "details": "body=null"
+    },
+    {
+      "name": "GET /api/youtube/status",
+      "status": "PASS",
+      "details": "connected=false"
+    },
+    {
+      "name": "POST /api/copy/generate",
+      "status": "PASS",
+      "details": "title=\"smoke test clip\""
+    },
+    {
+      "name": "POST /api/videos/upload",
+      "status": "FAIL",
+      "details": "HTTP 200 resp={}"
+    }
+  ]
+}
