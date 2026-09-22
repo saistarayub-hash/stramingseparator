@@ -1,0 +1,89 @@
+# The full, hands-off loop:
+#   push to arena/… → deploy to Render → wait until live → verify → smoke test
+#
+# Nothing is ever clicked: every push to the session branch is rebuilt live and
+# proven end-to-end. Results are committed to cloud-probe/ (secret-free, so
+# this runs on GitHub's free public-repo minutes).
+#
+# Loop safety: the report commits below only touch cloud-probe/**, and this
+# workflow filters on that path, so its own commits never re-trigger it.
+name: deploy-and-verify
+on:
+  push:
+    branches: ['arena/01a0ba1a-stramingseparator']
+    paths-ignore: ['cloud-probe/**', '*.trigger.txt']
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'branch to check out + deploy'
+        required: false
+permissions:
+  contents: write
+concurrency:
+  group: deploy-and-verify-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      app_url: ${{ steps.find.outputs.app_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+      - name: deploy to Render — wait until live + verified
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          DEPLOY_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
+        run: |
+          set -o pipefail
+          node scripts/render-deploy.mjs | tee cloud-probe/deploy.txt
+      - id: find
+        name: expose app URL (fallback if deploy skipped/failed)
+        if: always()
+        run: |
+          echo "app_url=$(node -e 'let r={};try{r=require("./cloud-probe/deploy.json")}catch{};process.stdout.write(r.service?.url||"https://streampilot-ttus.onrender.com")')" >> "$GITHUB_OUTPUT"
+      - name: commit deploy report
+        if: always()
+        run: |
+          git config user.name streampilot-bot
+          git config user.email bot@users.noreply.github.com
+          git add cloud-probe/deploy.txt cloud-probe/deploy.json
+          git commit -m "chore: deploy $(date -u +%FT%TZ)" || echo none
+          git push origin HEAD:arena/01a0ba1a-stramingseparator || echo PUSH-DENIED
+        env:
+          GH_TOKEN: ${{ github.token }}
+  smoke:
+    needs: deploy
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+      - name: end-to-end smoke test against the live app
+        env:
+          APP_URL: ${{ needs.deploy.outputs.app_url }}
+        run: |
+          set -o pipefail
+          node scripts/smoketest.mjs | tee cloud-probe/smoketest.txt
+        continue-on-error: true
+      - name: commit smoke report
+        if: always()
+        run: |
+          git config user.name streampilot-bot
+          git config user.email bot@users.noreply.github.com
+          git add cloud-probe/smoketest.txt cloud-probe/report.json
+          git commit -m "chore: smoke test $(date -u +%FT%TZ)" || echo none
+          git push origin HEAD:arena/01a0ba1a-stramingseparator || echo PUSH-DENIED
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: gate (fail the run if any smoke check failed)
+        run: |
+          node -e '
+            const fs=require("fs");
+            const r=JSON.parse(fs.readFileSync("cloud-probe/report.json","utf8"));
+            const ok=(r.fails||0)===0;
+            console.log(`VERDICT: ${r.passes} passed, ${r.fails} failed — ${ok?"ALL GREEN":"NOT READY"}`);
+            process.exit(ok?0:1);
+          '
