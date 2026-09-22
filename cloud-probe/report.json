@@ -1,5 +1,5 @@
 {
-  "at": "2026-09-22T10:27:19.176Z",
+  "at": "2026-09-22T19:45:01.128Z",
   "base": "https://streampilot-ttus.onrender.com",
   "passes": 12,
   "fails": 1,
@@ -33,7 +33,7 @@
     {
       "name": "GET /api/videos",
       "status": "PASS",
-      "details": "count=4"
+      "details": "count=5"
     },
     {
       "name": "GET /api/settings",
