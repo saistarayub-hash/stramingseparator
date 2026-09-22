@@ -228,13 +228,17 @@ async function ensureCollection(a, engine, name) {
 }
 
 /* ------------------------------------------------------------------ data access (engine-agnostic) */
+// TablesDB rows only return their column data when explicitly selected — a
+// bare getRow/listRows returns just the row metadata ($id, $createdAt, …).
+const SELECT_ALL = () => [Query.select(['*'])];
+
 function dataApi(a) {
   return {
     async list(name) {
       const a2 = appwrite();
       const dbId = a2.dbId;
       if (dbMode === 'tables') {
-        const res = await a2.tables.listRows(dbId, name, [Query.limit(100)]);
+        const res = await a2.tables.listRows(dbId, name, [...SELECT_ALL(), Query.limit(100)]);
         return (res.rows || []).map((r) => decode(r));
       }
       if (dbMode === 'documentsdb') {
@@ -247,7 +251,7 @@ function dataApi(a) {
     async get(name, id) {
       const a2 = appwrite();
       try {
-        if (dbMode === 'tables') return decode(await a2.tables.getRow(a2.dbId, name, id));
+        if (dbMode === 'tables') return decode(await a2.tables.getRow(a2.dbId, name, id, SELECT_ALL()));
         if (dbMode === 'documentsdb') return decode(await a2.modern.getDocument(a2.dbId, name, id));
         return decode(await a2.legacy.getDocument(a2.dbId, name, id));
       } catch { return null; }

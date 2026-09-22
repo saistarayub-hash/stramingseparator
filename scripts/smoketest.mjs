@@ -99,7 +99,8 @@ async function main() {
   check('GET /api/autopilot/status', ap.status === 200 && ap.json !== null, `running=${ap.json?.running}`);
 
   const lc = await get('/api/liveclip/status');
-  check('GET /api/liveclip/status', lc.status === 200 && lc.json !== null, `running=${lc.json?.running}`);
+  // liveclip.status() returns null when idle — a 200 with `null` body is correct.
+  check('GET /api/liveclip/status', lc.status === 200, `body=${lc.text.slice(0, 40)}`);
 
   const yt = await get('/api/youtube/status');
   check('GET /api/youtube/status', yt.status === 200, `connected=${yt.json?.connected}`);
@@ -120,7 +121,7 @@ async function main() {
     const upJson = await up.json().catch(() => ({}));
     const videoId = upJson?.id;
     check('POST /api/videos/upload', up.status === 200 && !!videoId,
-      videoId ? `id=${videoId}` : `HTTP ${up.status} ${(upJson.error || '').slice(0, 80)}`);
+      videoId ? `id=${videoId}` : `HTTP ${up.status} resp=${(upJson && JSON.stringify(upJson).slice(0, 120)) || 'null'}`);
 
     if (videoId) {
       const an = await post(`/api/videos/${videoId}/analyze`, {});
