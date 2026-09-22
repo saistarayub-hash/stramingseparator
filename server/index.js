@@ -35,6 +35,9 @@ for (const d of [DATA_DIR, UPLOADS_DIR, OUTPUT_DIR, PUBLIC_DIR]) {
 }
 
 const app = express();
+// Baked at process start so /api/status reveals exactly which build is live,
+// on any host (Render injects RENDER_GIT_COMMIT too; this is the fallback).
+process.env.STREAMPILOT_BUILD_AT = process.env.STREAMPILOT_BUILD_AT || new Date().toISOString();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(PUBLIC_DIR));
 
@@ -73,6 +76,8 @@ app.get('/api/status', (_req, res) => res.json({
   // exactly which commit is live (so it can wait for a fresh deploy).
   gitCommit: process.env.RENDER_GIT_COMMIT || null,
   gitBranch: process.env.RENDER_GIT_BRANCH || null,
+  // baked at startup so we can tell builds apart even without Render env.
+  buildAt: process.env.STREAMPILOT_BUILD_AT || null,
 }));
 
 // ------------------------------------------------------------------- videos
