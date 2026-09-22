@@ -69,6 +69,10 @@ app.get('/api/status', (_req, res) => res.json({
   ok: true,
   cloud: usingCloud() ? 'appwrite' : 'local',
   appwriteConfigured: isConfigured(),
+  // Render injects these for git-backed deploys; lets the CI pipeline know
+  // exactly which commit is live (so it can wait for a fresh deploy).
+  gitCommit: process.env.RENDER_GIT_COMMIT || null,
+  gitBranch: process.env.RENDER_GIT_BRANCH || null,
 }));
 
 // ------------------------------------------------------------------- videos

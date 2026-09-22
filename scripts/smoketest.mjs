@@ -16,6 +16,10 @@
 import fs from 'node:fs';
 
 const BASE = process.env.APP_URL || 'https://streampilot-ttus.onrender.com';
+// If set, the runner knows which commit SHOULD be live (e.g. via Render
+// Auto-Deploy). Wait for /api/status.gitCommit to match before testing, so we
+// never smoke-test a stale deploy.
+const EXPECT_COMMIT = process.env.EXPECT_COMMIT || '';
 const SAMPLE_URLS = [
   'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4',
   'https://sample-videos.com/video321/mp4/360/big_buck_bunny_360p_1mb.mp4',
@@ -70,6 +74,44 @@ async function downloadSample() {
 async function main() {
   out(`StreamPilot smoke test — ${new Date().toISOString()}`);
   out(`base: ${BASE}\n`);
+
+  // ---- 0. (optional) wait for the live app to run the code we just pushed --
+  // Skipped unless EXPECT_COMMIT is set. Two phases:
+  //   1. quick-probe (~2 min): does the live app even REPORT a gitCommit?
+  //      (apps deployed before this change won't). If it never does, skip the
+  //      wait — we can't track the commit, so just run the checks.
+  //   2. match-wait (up to 12 min): once it reports one, block until it equals
+  //      the commit we just pushed (i.e. Render Auto-Deploy has caught up).
+  if (EXPECT_COMMIT) {
+    const wantShort = EXPECT_COMMIT.slice(0, 7);
+    let live = null;
+    let supportsCommit = false;
+    const probeDeadline = Date.now() + 2 * 60 * 1000;
+    const matchDeadline = Date.now() + 12 * 60 * 1000;
+
+    while (Date.now() < probeDeadline) {
+      const st = await get('/api/status');
+      live = st.json?.gitCommit || null;
+      if (live) { supportsCommit = true; break; }
+      await sleep(20000);
+    }
+    if (supportsCommit) {
+      while (Date.now() < matchDeadline) {
+        if (live && (live === EXPECT_COMMIT || live.slice(0, 7) === wantShort)) break;
+        await sleep(20000);
+        const st = await get('/api/status');
+        live = st.json?.gitCommit || null;
+      }
+    }
+
+    if (!supportsCommit) {
+      check('live commit tracked', false, 'SKIP: live app predates gitCommit reporting');
+    } else {
+      check('live app is on the pushed commit',
+        live === EXPECT_COMMIT || (live && live.slice(0, 7) === wantShort),
+        `live=${live ? live.slice(0, 7) : '(unset)'} want=${wantShort}`);
+    }
+  }
 
   // ---- 1. health + cloud ------------------------------------------------
   const status = await get('/api/status');

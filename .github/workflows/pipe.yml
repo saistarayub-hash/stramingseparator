@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       app_url: ${{ steps.find.outputs.app_url }}
+      sha: ${{ steps.find.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,10 +40,11 @@ jobs:
           set -o pipefail
           node scripts/render-deploy.mjs | tee cloud-probe/deploy.txt
       - id: find
-        name: expose app URL (fallback if deploy skipped/failed)
+        name: expose app URL + pushed commit (fallback if deploy skipped/failed)
         if: always()
         run: |
           echo "app_url=$(node -e 'let r={};try{r=require("./cloud-probe/deploy.json")}catch{};process.stdout.write(r.service?.url||"https://streampilot-ttus.onrender.com")')" >> "$GITHUB_OUTPUT"
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
       - name: commit deploy report
         if: always()
         run: |
@@ -64,6 +66,9 @@ jobs:
       - name: end-to-end smoke test against the live app
         env:
           APP_URL: ${{ needs.deploy.outputs.app_url }}
+          # only waits for the live commit when Render Auto-Deploy is expected
+          # to pick it up; with a RENDER_API_KEY the deploy job already waited.
+          EXPECT_COMMIT: ${{ needs.deploy.outputs.sha }}
         run: |
           set -o pipefail
           node scripts/smoketest.mjs | tee cloud-probe/smoketest.txt
