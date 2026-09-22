@@ -30,6 +30,22 @@ function startServer(opts) {
 
       if (req.url.startsWith('/v1/')) {
         const segs = path.replace(/^\/v1\//, '').split('/').filter(Boolean);
+        // storage bucket validation mock: max file size ceiling.
+        if (segs[0] === 'storage' && segs[1] === 'buckets') {
+          if (m === 'GET' && segs.length === 2) {
+            return send(200, { total: 0, buckets: [] }); // list
+          }
+          if (m === 'GET' && segs.length === 3) {
+            return send(404, { type: 'bucket_not_found', code: 404, message: 'Bucket not found' }); // getBucket
+          }
+          if (m === 'POST') {
+            const cap = opts.bucketMaxFileSize;
+            if (cap && payload.maximumFileSize > cap) {
+              return send(400, { type: 'general_argument_invalid', code: 400, message: `Invalid \`maximumFileSize\` param: Value must be a valid range between 1 and ${cap.toLocaleString('en-US')}` });
+            }
+            return send(201, { $id: payload.bucketId, name: payload.name });
+          }
+        }
         const products = ['tablesdb', 'documentsdb', 'databases'];
         const product = segs[0];
         if (products.includes(product)) {
@@ -165,6 +181,18 @@ async function run() {
     const aw = await freshAppwrite();
     const res = await aw.bootstrap();
     check('E empty project creates tablesdb', res.mode === 'tables' && res.databaseId === 'streampilot_t' && log.created.includes('tablesdb:streampilot_t'));
+    srv.close();
+  }
+
+  // F) free-plan bucket max file size = 50,000,000 → create succeeds at cap.
+  {
+    const { srv, log } = await startServer({ allowed: new Set(['tablesdb', 'storage']), quota: 1, bucketMaxFileSize: 50000000,
+      databases: [{ id: 'streampilot_t', name: 'streampilot_t', product: 'tablesdb', type: 'tablesdb' }] });
+    setEnv(srv.address().port);
+    const aw = await freshAppwrite();
+    let res = null, err = null;
+    try { res = await aw.bootstrap(); } catch (e) { err = e; }
+    check('F bucket created under free-plan 50MB cap', !err && res.mode === 'tables' && res.created.includes('bucket:videos'));
     srv.close();
   }
 

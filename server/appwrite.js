@@ -316,12 +316,58 @@ async function ensureBucket() {
     await st.getBucket(VIDEOS_BUCKET);
     return false;
   } catch {
-    await st.createBucket(
-      VIDEOS_BUCKET, VIDEOS_BUCKET, publicRead(),
-      false, true, 20 * 1024 * 1024 * 1024, [], 'none', false, false,
-    );
-    return true;
+    return createBucketAdaptive(st);
   }
+}
+
+/**
+ * Create the videos bucket, adapting the maximum file size to whatever the
+ * current plan permits. Appwrite validates maximumFileSize to a plan-specific
+ * range (the free tier caps it at 50,000,000 bytes = 50 MB) and rejects
+ * anything above it — so we parse the allowed ceiling from the server's own
+ * error and retry, rather than guessing.
+ */
+async function createBucketAdaptive(st) {
+  // Appwrite's free plan validates maximumFileSize to at most 50,000,000 bytes
+  // (~47.7 MiB). Try that ceiling first; if a plan's cap differs, parse its
+  // exact allowed maximum from the server's own error and retry once.
+  const attempts = [50_000_000];
+  let lastErr = null;
+
+  const tryCreate = async (maxFileSize) => {
+    if (maxFileSize != null) {
+      await st.createBucket(
+        VIDEOS_BUCKET, VIDEOS_BUCKET, publicRead(),
+        false, true, maxFileSize, [], 'none', false, false,
+      );
+    } else {
+      // Omit maximumFileSize entirely → Appwrite applies its own default.
+      await st.createBucket(VIDEOS_BUCKET, VIDEOS_BUCKET, publicRead(), false, true);
+    }
+    return true;
+  };
+
+  for (const size of attempts) {
+    try {
+      return await tryCreate(size);
+    } catch (e) {
+      lastErr = e;
+      // The server reports the valid range, e.g.
+      // "Value must be a valid range between 1 and 50,000,000" — use its max.
+      const m = /between\s+1\s+and\s+([\d,]+)/i.exec(`${e?.message || ''} ${e?.response || ''}`);
+      const cap = m ? Number(m[1].replace(/,/g, '')) : 0;
+      if (cap > 0 && cap !== size) {
+        try {
+          return await tryCreate(cap);
+        } catch (e2) {
+          lastErr = e2;
+        }
+      }
+    }
+  }
+
+  // Last resort: let Appwrite pick the default size itself.
+  return tryCreate(null).catch(() => { throw lastErr; });
 }
 
 /* ------------------------------------------------------------------ bootstrap */
