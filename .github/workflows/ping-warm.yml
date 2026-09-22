@@ -1,12 +1,12 @@
 # Keep StreamPilot warm + monitor it for free, forever.
 # Render's free web service sleeps after ~15 min of no traffic. This scheduled
-# job pings the live app every 10 minutes (public repo = unlimited Actions
+# job pings the live app every 5 minutes (public repo = unlimited Actions
 # minutes) so it never sleeps, and fails loudly (red Actions run + email badge)
 # if the app or cloud ever goes down. No secrets, no repo commits.
 name: keep-warm
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 permissions:
   contents: read
