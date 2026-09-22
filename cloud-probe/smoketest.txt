@@ -1,4 +1,4 @@
-StreamPilot smoke test — 2026-09-22T19:42:56.061Z
+StreamPilot smoke test — 2026-09-22T19:54:35.095Z
 base: https://streampilot-ttus.onrender.com
 
 SKIP live commit tracked — SKIP: live app predates gitCommit reporting
@@ -6,7 +6,7 @@ PASS GET /api/status → ok — {"ok":true,"cloud":"appwrite","appwriteConfigure
 PASS cloud active — {"configured":true,"active":true,"endpoint":"https://nyc.cloud.appwrite.io/v1","projectId":"6aaeab640039b9e4c8eb","apiKey":true,"apiKeyTail":"c915d6","databaseId":"streampilot","databaseIdConfigured":"streampilot","engine":"tables","engines":{"tables":"full","documentsdb":null,"legacy":null},"error":null,"errorKind":null,"retry":null}
 PASS cloud engine = tables — engine=tables
 PASS cloud error empty — error=(none)
-PASS GET /api/videos — count=5
+PASS GET /api/videos — count=6
 PASS GET /api/settings — {"youtubeToken":false}
 PASS GET /api/publishes — count=0
 PASS GET /api/connections — platforms=youtube:off,tiktok:off,twitch:off,kick:off
