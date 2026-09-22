@@ -1,11 +1,12 @@
-StreamPilot smoke test — 2026-09-22T10:18:27.655Z
+StreamPilot smoke test — 2026-09-22T10:22:09.329Z
 base: https://streampilot-ttus.onrender.com
 
+SKIP live commit tracked — SKIP: live app predates gitCommit reporting
 PASS GET /api/status → ok — {"ok":true,"cloud":"appwrite","appwriteConfigured":true}
 PASS cloud active — {"configured":true,"active":true,"endpoint":"https://nyc.cloud.appwrite.io/v1","projectId":"6aaeab640039b9e4c8eb","apiKey":true,"apiKeyTail":"c915d6","databaseId":"streampilot","databaseIdConfigured":"streampilot","engine":"tables","engines":{"tables":"full","documentsdb":null,"legacy":null},"error":null,"errorKind":null,"retry":null}
 PASS cloud engine = tables — engine=tables
 PASS cloud error empty — error=(none)
-PASS GET /api/videos — count=2
+PASS GET /api/videos — count=3
 PASS GET /api/settings — {"youtubeToken":false}
 PASS GET /api/publishes — count=0
 PASS GET /api/connections — platforms=youtube:off,tiktok:off,twitch:off,kick:off
@@ -16,5 +17,5 @@ PASS POST /api/copy/generate — title="smoke test clip"
   downloaded 0.95 MB from https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4
 FAIL POST /api/videos/upload — HTTP 200 resp={}
 
-summary: 12 passed, 1 failed, 0 skipped
+summary: 12 passed, 1 failed, 1 skipped
 VERDICT: NOT FULLY AUTOMATED-READY

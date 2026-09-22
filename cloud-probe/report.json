@@ -1,10 +1,15 @@
 {
-  "at": "2026-09-22T10:18:30.986Z",
+  "at": "2026-09-22T10:24:13.572Z",
   "base": "https://streampilot-ttus.onrender.com",
   "passes": 12,
   "fails": 1,
-  "skips": 0,
+  "skips": 1,
   "results": [
+    {
+      "name": "live commit tracked",
+      "status": "SKIP",
+      "details": "SKIP: live app predates gitCommit reporting"
+    },
     {
       "name": "GET /api/status → ok",
       "status": "PASS",
@@ -28,7 +33,7 @@
     {
       "name": "GET /api/videos",
       "status": "PASS",
-      "details": "count=2"
+      "details": "count=3"
     },
     {
       "name": "GET /api/settings",
