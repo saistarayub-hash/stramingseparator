@@ -1,7 +1,8 @@
 {
-  "at": "2026-09-22T19:42:45.811Z",
+  "at": "2026-09-22T19:54:24.551Z",
   "steps": [],
   "renderKeyPresent": false,
+  "renderHookPresent": false,
   "deployed": false,
-  "reason": "no RENDER_API_KEY secret"
+  "reason": "no RENDER_API_KEY / RENDER_DEPLOY_HOOK_URL secret"
 }
