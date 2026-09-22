@@ -12,6 +12,7 @@ function startServer(opts) {
   const legacyNoCollectionsWrite = !!opts.legacyNoCollectionsWrite;
   const databases = opts.databases.map((d) => ({ ...d }));
   const log = { created: [], deleted: [] };
+  const rowsStore = {}; // `${dbId}/${table}` -> { rowId: {col: value} } (TablesDB)
 
   const srv = http.createServer((req, res) => {
     const send = (code, obj) => {
@@ -93,8 +94,25 @@ function startServer(opts) {
           if (dbId && kind === 'tables' && !name && m === 'POST') return send(201, { $id: payload.tableId || 't', name: payload.name });
           if (dbId && kind === 'tables' && name && !action && m === 'GET') return send(200, { $id: name, name });
           if (dbId && kind === 'tables' && name && action === 'rows') {
-            if (m === 'POST') return send(201, { $id: payload.rowId, data: payload.data });
-            if (m === 'GET') return send(200, { total: 0, rows: [] });
+            const tableRows = rowsStore[`${dbId}/${name}`] || (rowsStore[`${dbId}/${name}`] = {});
+            const rowId = segs[5];
+            const wantSelect = req.url.includes('select');
+            if (m === 'POST') {
+              const data = { ...(payload.data || {}) };
+              delete data.rowId;
+              tableRows[payload.rowId] = data;
+              return send(201, { $id: payload.rowId, $createdAt: new Date().toISOString(), ...data });
+            }
+            if (m === 'GET' && rowId) {
+              const rec = tableRows[rowId];
+              if (!rec) return send(404, { type: 'row_not_found', code: 404, message: 'Row not found' });
+              return send(200, { $id: rowId, $createdAt: new Date().toISOString(), ...(wantSelect ? rec : {}) });
+            }
+            if (m === 'GET') {
+              // Real TablesDB: rows return NO column data unless select is applied.
+              const list = Object.entries(tableRows).map(([id, rec]) => ({ $id: id, $createdAt: new Date().toISOString(), ...(wantSelect ? rec : {}) }));
+              return send(200, { total: list.length, rows: list });
+            }
           }
           if (dbId && kind === 'collections' && !name && m === 'POST') return send(201, { $id: payload.collectionId || 'c', name: payload.name });
           if (dbId && kind === 'collections' && name && !action && m === 'GET') return send(200, { $id: name, name });
@@ -193,6 +211,25 @@ async function run() {
     let res = null, err = null;
     try { res = await aw.bootstrap(); } catch (e) { err = e; }
     check('F bucket created under free-plan 50MB cap', !err && res.mode === 'tables' && res.created.includes('bucket:videos'));
+    srv.close();
+  }
+
+  // G) tables engine: a written row must READ BACK its payload (regression for
+  //    the smoke test's empty-upload-id bug — TablesDB returns no column data
+  //    unless Query.select(['*']) is sent, which server/appwrite.js now does).
+  {
+    const { srv, log } = await startServer({ allowed: new Set(['tablesdb', 'storage']), quota: 1,
+      databases: [{ id: 'streampilot_t', name: 'streampilot_t', product: 'tablesdb', type: 'tablesdb' }] });
+    setEnv(srv.address().port);
+    const aw = await freshAppwrite();
+    await aw.bootstrap();
+    const vid = { id: 'v-test-1', name: 'test.mp4', stage: 'uploaded', createdAt: new Date().toISOString() };
+    await aw.appVideos.set(vid.id, vid);
+    const readBack = await aw.appVideos.get(vid.id);
+    const listed = await aw.appVideos.list();
+    const ok = readBack && readBack.stage === 'uploaded' && readBack.name === 'test.mp4'
+      && listed.length === 1 && listed[0].id === 'v-test-1';
+    check('G tables row reads back through decode() (select all)', ok);
     srv.close();
   }
 
