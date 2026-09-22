@@ -1,8 +1,8 @@
 {
-  "at": "2026-09-22T09:52:36.797Z",
+  "at": "2026-09-22T10:01:00.783Z",
   "base": "https://streampilot-ttus.onrender.com",
-  "passes": 11,
-  "fails": 2,
+  "passes": 12,
+  "fails": 1,
   "skips": 0,
   "results": [
     {
@@ -28,7 +28,7 @@
     {
       "name": "GET /api/videos",
       "status": "PASS",
-      "details": "count=0"
+      "details": "count=1"
     },
     {
       "name": "GET /api/settings",
@@ -52,8 +52,8 @@
     },
     {
       "name": "GET /api/liveclip/status",
-      "status": "FAIL",
-      "details": "running=undefined"
+      "status": "PASS",
+      "details": "body=null"
     },
     {
       "name": "GET /api/youtube/status",
@@ -68,7 +68,7 @@
     {
       "name": "POST /api/videos/upload",
       "status": "FAIL",
-      "details": "HTTP 200 "
+      "details": "HTTP 200 resp={}"
     }
   ]
 }
