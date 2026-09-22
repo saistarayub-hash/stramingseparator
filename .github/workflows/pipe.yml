@@ -10,7 +10,7 @@
 name: deploy-and-verify
 on:
   push:
-    branches: ['arena/01a0ba1a-stramingseparator']
+    branches: ['arena/01a0ba1a-stramingseparator', 'main']
     paths-ignore: ['cloud-probe/**', '*.trigger.txt']
   workflow_dispatch:
     inputs:
