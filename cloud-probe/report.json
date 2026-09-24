@@ -1,24 +1,24 @@
 {
-  "at": "2026-09-22T20:19:46.757Z",
+  "at": "2026-09-24T19:52:35.920Z",
   "base": "https://streampilot-ttus.onrender.com",
   "passes": 12,
-  "fails": 1,
-  "skips": 1,
+  "fails": 2,
+  "skips": 0,
   "results": [
     {
-      "name": "live commit tracked",
-      "status": "SKIP",
-      "details": "SKIP: live app predates gitCommit reporting"
+      "name": "live app is on the pushed commit",
+      "status": "FAIL",
+      "details": "live=e59f1ef want=8886ba8"
     },
     {
       "name": "GET /api/status → ok",
       "status": "PASS",
-      "details": "{\"ok\":true,\"cloud\":\"appwrite\",\"appwriteConfigured\":true}"
+      "details": "{\"ok\":true,\"cloud\":\"appwrite\",\"appwriteConfigured\":true,\"gitCommit\":\"e59f1ef6789e191b638d86daf418c5c6b3e0f7d8\",\"gitBranch\":\"arena/01a0ba1a-stramingseparator\",\"buildAt\":\"2026-09-22T20:26:31.752Z\"}"
     },
     {
       "name": "cloud active",
       "status": "PASS",
-      "details": "{\"configured\":true,\"active\":true,\"endpoint\":\"https://nyc.cloud.appwrite.io/v1\",\"projectId\":\"6aaeab640039b9e4c8eb\",\"apiKey\":true,\"apiKeyTail\":\"c915d6\",\"databaseId\":\"streampilot\",\"databaseIdConfigured\":\"streampilot\",\"engine\":\"tables\",\"engines\":{\"tables\":\"full\",\"documentsdb\":null,\"legacy\":null},\"error\":null,\"errorKind\":null,\"retry\":null}"
+      "details": "{\"configured\":true,\"active\":true,\"endpoint\":\"https://nyc.cloud.appwrite.io/v1\",\"projectId\":\"6aaeab640039b9e4c8eb\",\"apiKey\":true,\"apiKeyTail\":\"key\",\"databaseId\":\"streampilot\",\"databaseIdConfigured\":\"streampilot\",\"engine\":\"tables\",\"engines\":{\"tables\":\"full\",\"documentsdb\":null,\"legacy\":null},\"error\":null,\"errorKind\":null,\"retry\":null}"
     },
     {
       "name": "cloud engine = tables",
@@ -33,12 +33,12 @@
     {
       "name": "GET /api/videos",
       "status": "PASS",
-      "details": "count=8"
+      "details": "count=4"
     },
     {
       "name": "GET /api/settings",
       "status": "PASS",
-      "details": "{\"youtubeToken\":false}"
+      "details": "{\"game\":\"Call of duty mobile\",\"schedule\":\"\",\"socials\":\"tiktok.com/@lol_minato33\",\"donation\":\"\",\"autopilotEnabled\":true,\"brain\":{\"faqs\":[]},\"youtubeToken\":false}"
     },
     {
       "name": "GET /api/publishes",

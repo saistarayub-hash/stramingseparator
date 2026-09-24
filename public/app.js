@@ -156,6 +156,17 @@ function renderLibrary() {
   });
 }
 
+/** Open the detail panel for a video (accepts an id or a video object). */
+async function openDetail(idOrVideo) {
+  const id = typeof idOrVideo === 'string' ? idOrVideo : idOrVideo?.id;
+  if (!id) return;
+  let v = (typeof idOrVideo === 'object' && idOrVideo) || state.videos.find((x) => x.id === id) || null;
+  try {
+    v = (await api.get('/api/videos/' + id)) || v;
+  } catch { /* offline / deleted — show whatever we have */ }
+  if (v) renderDetail(v);
+}
+
 function renderDetail(v) {
   if (!v) return;
   state.activeVideoId = v.id;
@@ -461,7 +472,7 @@ function renderLiveClip() {
     btn.classList.remove('btn-primary');
     btn.classList.add('btn-danger');
     $('#live-hint').style.display = 'block';
-    $('#live-hint').textContent = `● Recording (${st.source || 'live'}) — buffer keeps the last ~30s. Clips made: ${st.processed || 0}`;
+    $('#live-hint').textContent = `● Recording (${st.source || 'live'}) — buffer keeps the last ~2 min. Clips made: ${st.processed || 0}`;
   } else {
     btn.textContent = '● Start recording';
     btn.classList.add('btn-primary');
@@ -547,13 +558,12 @@ $('#live-cut-btn')?.addEventListener('click', async () => {
     const duration = parseInt($('#live-clip-dur').value, 10);
     const title = $('#live-clip-title').value.trim();
     const vertical = $('#live-clip-vertical').checked;
-    const r = await api.post('/api/liveclip/cut', { offset, duration, title: title || null, vertical });
-    liveClipState.cuts.unshift({ at: Date.now(), offset, duration, name: r.video?.name });
+    await api.post('/api/liveclip/cut', { offset, duration, title: title || null, vertical });
+    liveClipState.cuts.unshift({ at: Date.now(), offset, duration, name: title || 'Live clip' });
     liveClipState.cuts = liveClipState.cuts.slice(0, 20);
-    liveLog(`✅ Clip cut (${offset}s back, ${duration}s) → "${r.video?.name}". It's in your Library!`, 'feed-info');
     renderCutHistory();
-    toast('Clip saved to Library 🎬');
-    refreshVideos();
+    liveLog(`✂️ Cutting ${duration}s from ${offset}s back… (runs in the background — watch the feed)`, 'feed-info');
+    toast('Cutting — the clip lands in your Library when done ✂️');
   } catch (e) {
     liveLog('⚠️ ' + e.message, 'feed-error');
     toast('Cut failed: ' + e.message, 'error');
@@ -563,31 +573,34 @@ $('#live-cut-btn')?.addEventListener('click', async () => {
 });
 
 // Auto-edit: cut + auto-captions + title + description + hashtags
+// Runs as a background job (transcribe + render is slow) — progress and the
+// finished clip arrive over SSE (onLiveClipEvent → type 'auto').
+let autoBusy = false;
 $('#live-auto-btn')?.addEventListener('click', async () => {
-  setBusy($('#live-auto-btn'), true, 'Auto-editing…');
+  if (autoBusy) return;
   try {
     const offset = liveClipState.offset;
     const duration = parseInt($('#live-clip-dur').value, 10);
     const title = $('#live-clip-title').value.trim();
     const vertical = $('#live-clip-vertical').checked;
     const captions = $('#live-clip-caption').checked;
-    const r = await api.post('/api/liveclip/auto', { offset, duration, title: title || null, vertical, captions });
-    const v = r.video;
-    liveClipState.cuts.unshift({ at: Date.now(), offset, duration, name: v?.name });
-    liveLog(`✨ Auto-edit done → "${v?.name}"${v.captions?.length ? ` with ${v.captions.length} captions` : ''}`, 'feed-info');
-    liveLog(`📝 Title: ${v?.copy?.title || ''}`, 'feed-info');
-    liveLog(`🏷️ ${v?.copy?.hashtags || ''}`, 'feed-info');
-    renderCutHistory();
-    toast('Auto-edit saved to Library ✨');
-    refreshVideos();
-    if (v && state.videos.some((x) => x.id === v.id)) openDetail(v);
+    autoBusy = true;
+    setBusy($('#live-auto-btn'), true, 'Auto-editing…');
+    await api.post('/api/liveclip/auto', { offset, duration, title: title || null, vertical, captions });
+    liveLog(`✨ Auto-edit started (${offset}s back, ${duration}s)… watch the steps here`, 'feed-info');
+    toast('Auto-edit running — watch the feed ✨');
   } catch (e) {
+    autoBusy = false;
+    setBusy($('#live-auto-btn'), false);
     liveLog('⚠️ ' + e.message, 'feed-error');
     toast('Auto-edit failed: ' + e.message, 'error');
-  } finally {
-    setBusy($('#live-auto-btn'), false);
   }
 });
+
+function autoEditFinished() {
+  autoBusy = false;
+  setBusy($('#live-auto-btn'), false);
+}
 
 function renderCutHistory() {
   const box = $('#live-cut-history');
@@ -621,17 +634,33 @@ function onLiveClipEvent(d) {
     }
   }
   if (d.type === 'cut') {
-    liveLog(`🎬 Live clip → "${d.name}" (${d.duration?.toFixed(1)}s)`, 'feed-info');
-    refreshVideos();
+    liveLog(`🎬 Clip cut → "${d.name}" (${Number(d.duration || 0).toFixed(1)}s) — saved to your Library!`, 'feed-info');
+    toast('Clip saved to Library 🎬');
+    refreshVideos().then(() => d.videoId && openDetail(d.videoId));
+  }
+  if (d.type === 'cuterror') {
+    liveLog('⚠️ Cut failed: ' + esc(d.error || 'unknown error'), 'feed-error');
+    toast('Cut failed: ' + (d.error || 'unknown error'), 'error');
   }
   if (d.type === 'ps5') liveLog('PS5: ' + esc(d.state || JSON.stringify(d)), 'feed-info');
   if (d.type === 'auto') {
-    const steps = { cut: '✂️ Cutting moment…', transcribe: '🎙️ Transcribing audio (local Whisper)…', captions: '💬 Applying captions…', render: '🎬 Rendering clip…', done: '✅ Auto-edit done' };
-    liveLog(steps[d.step] || esc(d.step), 'feed-info');
+    const steps = { start: '✨ Auto-edit running…', cut: '✂️ Cutting moment…', transcribe: '🎙️ Transcribing audio (local Whisper)…', captions: '💬 Applying captions…', render: '🎬 Rendering clip…', done: '✅ Auto-edit done', error: '⚠️ Auto-edit failed' };
+    liveLog(steps[d.step] || esc(d.step), d.step === 'error' ? 'feed-error' : 'feed-info');
     if (d.step === 'done') {
+      liveLog(`✨ "${d.name}"${d.captions ? ` with ${d.captions} captions` : ''}`, 'feed-info');
       liveLog(`📝 ${d.copy?.title || ''}`, 'feed-info');
       liveLog(`🏷️ ${d.copy?.hashtags || ''}`, 'feed-info');
-      refreshVideos();
+      if (d.warn) liveLog('⚠️ ' + esc(d.warn), 'feed-warn');
+      liveClipState.cuts.unshift({ at: Date.now(), offset: d.offset ?? liveClipState.offset, duration: d.duration || 0, name: d.name || 'Auto clip' });
+      liveClipState.cuts = liveClipState.cuts.slice(0, 20);
+      renderCutHistory();
+      toast('Auto-edit saved to Library ✨');
+      refreshVideos().then(() => d.videoId && openDetail(d.videoId));
+      autoEditFinished();
+    }
+    if (d.step === 'error') {
+      toast('Auto-edit failed: ' + (d.error || 'unknown error'), 'error');
+      autoEditFinished();
     }
   }
   if (d.type === 'render') {

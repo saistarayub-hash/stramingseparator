@@ -23,10 +23,10 @@ const KEY = process.env.RENDER_API_KEY || '';
 const HOOK = process.env.RENDER_DEPLOY_HOOK_URL || '';
 const SERVICE_RE = /streampilot/i;
 // Which branch the service must build. Defaults to the branch the runner
-// checked out (GITHUB_REF_NAME), else the session branch.
+// checked out (GITHUB_REF_NAME), else main.
 const TARGET_BRANCH = process.env.DEPLOY_BRANCH
   || process.env.GITHUB_REF_NAME
-  || 'arena/01a0ba1a-stramingseparator';
+  || 'main';
 const POLL_MS = 15000;
 const DEPLOY_TIMEOUT_MS = Number(process.env.DEPLOY_TIMEOUT_MS) || 20 * 60 * 1000;
 const VERIFY_TIMEOUT_MS = Number(process.env.VERIFY_TIMEOUT_MS) || 3 * 60 * 1000;

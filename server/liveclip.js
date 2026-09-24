@@ -31,11 +31,41 @@ const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : pat
 export const CLIP_DIR = path.join(DATA_DIR, 'clips');
 
 const SEGMENT_SECONDS = 2; // slice size for the rolling buffer
+const KEEP_SEGMENTS = 80;  // rolling window: ~160s of buffer (max 60s clip from up to 60s ago)
 
 // ------------------------------------------------------------------ helpers
 const ffbin = () => require('@ffmpeg-installer/ffmpeg').path;
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-const listTs = (dir) => { try { return readdirSync(dir).filter((f) => f.endsWith('.ts')).sort(); } catch { return []; } };
+const segNum = (f) => parseInt((String(f).match(/(\d+)\.ts$/) || [])[1] || '0', 10);
+const listTs = (dir) => {
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith('.ts')).sort((a, b) => segNum(a) - segNum(b));
+  } catch { return []; }
+};
+
+/** Real per-segment durations (cached). Segments cut at keyframes, so they are
+ *  rarely exactly SEGMENT_SECONDS long — plain `index * 2` math drifts badly. */
+const durCache = new Map();
+async function segDuration(file) {
+  if (durCache.has(file)) return durCache.get(file);
+  let d = SEGMENT_SECONDS;
+  try { d = (await probe(file)).duration || SEGMENT_SECONDS; } catch { /* assume nominal */ }
+  durCache.set(file, d);
+  return d;
+}
+
+/** Drop the oldest segments once the buffer outgrows the rolling window. */
+function pruneSegments(dir) {
+  try {
+    const files = listTs(dir);
+    if (files.length <= KEEP_SEGMENTS) return;
+    for (const f of files.slice(0, files.length - KEEP_SEGMENTS)) {
+      const p = path.join(dir, f);
+      durCache.delete(p);
+      try { rmSync(p); } catch { /* racing the writer — fine */ }
+    }
+  } catch { /* keep recording whatever happens to cleanup */ }
+}
 
 function hasWriteableFile(dir) {
   try {
@@ -130,7 +160,10 @@ export async function startRecorder(sourceUrl) {
       if (now - lastEmitTs > 3000) { lastEmitTs = now; emitStatus(); }
     }
     const opening = line.match(/Opening '([^']+\.ts)'/);
-    if (opening) rec.haveWriteable = true;
+    if (opening) {
+      rec.haveWriteable = true;
+      pruneSegments(dir);
+    }
   };
 
   const attach = (stream) => {
@@ -294,7 +327,7 @@ export async function cutLiveClip(o = {}) {
   });
 
   current.processed = (current.processed || 0) + 1;
-  emit('liveclip', { type: 'cut', videoId: clipId, name: vodName, duration: p.duration });
+  emit('liveclip', { type: 'cut', videoId: clipId, name: vodName, duration: p.duration, offset, liveOffset: start });
   emitStatus();
   try { rmSync(windowPath); } catch {}
   return vod;
@@ -305,24 +338,25 @@ async function buildWindow(dir, outPath, start, end) {
   const files = listTs(dir);
   if (!files.length) throw new Error('Buffered data is empty — is the source actually streaming?');
 
-  const segStart = (i) => i * SEGMENT_SECONDS;
-  const segEnd = (i) => (i + 1) * SEGMENT_SECONDS;
-
-  const chosen = [];
-  for (let i = 0; i < files.length; i++) {
-    const s = segStart(i); const e = segEnd(i);
-    if (e > start && s < end) chosen.push(i);
+  // Real timeline from actual segment durations (see segDuration) — segments
+  // are cut at keyframes so their lengths vary; time math must match content.
+  const timeline = [];
+  let t = 0;
+  for (const f of files) {
+    const d = await segDuration(path.join(dir, f));
+    timeline.push({ f, start: t, end: t + d });
+    t += d;
   }
-  if (!chosen.length) chosen.push(files.length - 1);
 
-  const firstStart = segStart(chosen[0]);
-  const lastEnd = segEnd(chosen[chosen.length - 1]);
-  const firstTrim = Math.max(0, start - firstStart);
+  const chosen = timeline.filter((s) => s.end > start && s.start < end);
+  if (!chosen.length) chosen.push(timeline[timeline.length - 1]);
+
+  const firstTrim = Math.max(0, start - chosen[0].start);
   const keepLen = (end - start);
 
   // concat demuxer (stream copy) — list file drives ffmpeg
   const listPath = path.join(dir, 'concat-list.txt');
-  const listLines = chosen.map((i) => `file '${path.join(dir, files[i])}'`).join('\n');
+  const listLines = chosen.map((s) => `file '${path.join(dir, s.f)}'`).join('\n');
   writeFileSync(listPath, listLines);
 
   const args = ['-hide_banner', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', listPath];
@@ -343,7 +377,7 @@ let autoBuilding = false;
  */
 export async function autoBuildClip({
   offset = 25, duration = 20, title = null, label = null, vertical = true,
-  captions = true, model = 'small',
+  captions = true, model = null,
 } = {}) {
   if (!current) throw new Error('No live recording active.');
   if (autoBuilding) throw new Error('An auto-edit is already running — one moment.');
@@ -417,7 +451,11 @@ export async function autoBuildClip({
     } catch { /* cloud optional */ }
 
     current.processed = (current.processed || 0) + 1;
-    emit('liveclip', { type: 'auto', step: 'done', videoId: clipId, name: vodName, duration: p.duration, copy, captions: captionList.length });
+    emit('liveclip', {
+      type: 'auto', step: 'done', videoId: clipId, name: vodName,
+      offset, duration: p.duration, copy, captions: captionList.length,
+      ...(transcriptionError ? { warn: 'Captions skipped: ' + transcriptionError } : {}),
+    });
     emitStatus();
     try { rmSync(windowPath); } catch {}
     return vod;

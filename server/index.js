@@ -412,23 +412,32 @@ app.post('/api/liveclip/stop', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/liveclip/cut', async (req, res) => {
-  try {
-    const vod = await liveclip.cutLiveClip(req.body || {});
-    res.json({ ok: true, video: vod });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+// Cut + auto-edit run as background jobs: the render (and Whisper) regularly
+// takes longer than hosted proxies allow, so we ACK immediately and stream
+// every step + the finished clip over SSE (`/api/events` → liveclip events).
+app.post('/api/liveclip/cut', (req, res) => {
+  const jobId = uid();
+  res.json({ ok: true, jobId, started: true });
+  runAsync(async () => {
+    try {
+      await liveclip.cutLiveClip({ ...(req.body || {}), jobId }); // emits {type:'cut', …} on success
+    } catch (e) {
+      emit('liveclip', { type: 'cuterror', error: e.message, jobId });
+    }
+  });
 });
 
 // Auto-edit: cut + transcribe + captions + title + copy — one call.
-app.post('/api/liveclip/auto', async (req, res) => {
-  try {
-    const vod = await liveclip.autoBuildClip(req.body || {});
-    res.json({ ok: true, video: vod });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+app.post('/api/liveclip/auto', (req, res) => {
+  const jobId = uid();
+  res.json({ ok: true, jobId, started: true });
+  runAsync(async () => {
+    try {
+      await liveclip.autoBuildClip({ ...(req.body || {}), jobId }); // SSE steps: cut → transcribe → captions → render → done
+    } catch (e) {
+      emit('liveclip', { type: 'auto', step: 'error', error: e.message, jobId });
+    }
+  });
 });
 
 // Generate copy for any video (titles/descriptions/hashtags).
@@ -454,7 +463,7 @@ app.post('/api/videos/:id/transcribe', async (req, res) => {
   runAsync(async () => {
     try {
       const { generateCaptions } = await import('./captions.js');
-      const result = await generateCaptions(src, { model: req.body?.model || 'small', language: req.body?.language || null });
+      const result = await generateCaptions(src, { model: req.body?.model || null, language: req.body?.language || null });
       if (result.error) throw new Error(result.error);
       await videos.set(v.id, { captions: result.captions, language: result.language });
       await jobs.set(jobId, { status: 'done', captions: result.captions.length });

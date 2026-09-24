@@ -5,18 +5,26 @@
 FROM node:20-bookworm-slim
 
 # python + venv for faster-whisper, ca-certs + curl for the healthcheck.
+# fonts-dejavu-core: drawtext (burned titles/captions) hard-fails with
+# "Cannot find a valid font" on slim images — captions need an actual TTF.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     python3-venv \
+    fonts-dejavu-core \
     ca-certificates \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# faster-whisper for local, private auto-captions (model downloads on first use).
+# faster-whisper for local, private auto-captions.
 RUN python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir faster-whisper
 ENV PYTHON=/opt/venv/bin/python3 \
     PATH="/opt/venv/bin:${PATH}"
+
+# Pre-fetch the tiny Whisper model so the first auto-edit starts instantly
+# instead of downloading mid-clip. Bigger models (SP_WHISPER_MODEL=base/small/…)
+# still download on demand at runtime.
+RUN /opt/venv/bin/python3 -c "from faster_whisper import WhisperModel; WhisperModel('tiny', device='cpu', compute_type='int8')"
 
 WORKDIR /app
 
@@ -28,6 +36,7 @@ RUN npm ci --omit=dev
 COPY server ./server
 COPY public ./public
 COPY scripts ./scripts
+COPY assets ./assets
 
 # Persistent state (videos, clips, settings) — mount a volume here.
 ENV DATA_DIR=/app/data \

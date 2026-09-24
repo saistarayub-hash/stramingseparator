@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const require = createRequire(import.meta.url);
 export const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
@@ -234,17 +238,24 @@ export async function measureLoudness(inputPath) {
   };
 }
 
-/** Locate a bold TTF for drawtext overlays across common OSes. */
+/** Locate a bold TTF for drawtext overlays across common OSes.
+ *  Prefers the font bundled in assets/fonts (the Docker image and most slim
+ *  servers ship NO fonts at all — drawtext hard-fails without one). */
 export function findFont() {
   const candidates = [
+    path.join(__dirname, '..', 'assets', 'fonts', 'DejaVuSans-Bold.ttf'),
+    path.join(__dirname, '..', 'assets', 'fonts', 'DejaVuSans.ttf'),
     '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+    '/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+    '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
     '/System/Library/Fonts/Supplemental/Arial Bold.ttf',
+    '/Library/Fonts/Arial Bold.ttf',
     'C:\\Windows\\Fonts\\arialbd.ttf',
     'C:\\Windows\\Fonts\\arial.ttf',
   ];
   for (const c of candidates) if (existsSync(c)) return c;
-  return null; // ffmpeg will use its default fontconfig font
+  return null; // no known font — callers must skip drawtext (it errors without one)
 }
 
 /** Escape text for ffmpeg drawtext (single-quoted). */
@@ -267,6 +278,12 @@ export function renderClip(inputPath, outputPath, o = {}, onLog) {
   const { start = 0, duration = 30, vertical = true, title = null, captions = [] } = o;
   const font = findFont();
   const fontArg = font ? `:fontfile='${font}'` : '';
+  // drawtext hard-fails with "Cannot find a valid font" when neither fontfile
+  // nor a system font exists (slim containers) — only overlay when we have one.
+  const overlay = !!font;
+  if (!overlay && (title || (captions || []).length) && onLog) {
+    onLog({ stage: 'render', warn: 'No TTF font found — skipping title/caption overlays.' });
+  }
 
   const base = vertical
     ? 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920'
@@ -274,13 +291,13 @@ export function renderClip(inputPath, outputPath, o = {}, onLog) {
 
   const filters = [base];
 
-  if (title) {
+  if (title && overlay) {
     const t = drawtextEscape(title);
     filters.push(
       `drawtext=text='${t}':fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=14:fontsize=52:x=(w-text_w)/2:y=h-180${fontArg}:enable='between(t,0,${Math.min(5, duration).toFixed(2)})'`
     );
   }
-  for (const c of captions || []) {
+  for (const c of (overlay ? captions || [] : [])) {
     if (!c || !c.text) continue;
     const txt = drawtextEscape(c.text);
     const s = Math.max(0, Number(c.start) || 0);

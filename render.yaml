@@ -37,4 +37,5 @@ services:
         sync: false
       # --- Whisper captions ---
       - key: SP_WHISPER_MODEL
-        value: small
+        value: tiny              # RAM-safe on the free tier (512MB); raise to
+                                 # base/small/medium on bigger instances

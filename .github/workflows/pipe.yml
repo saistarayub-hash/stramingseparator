@@ -10,7 +10,7 @@
 name: deploy-and-verify
 on:
   push:
-    branches: ['arena/01a0ba1a-stramingseparator', 'main']
+    branches: ['main', 'arena/**']
     paths-ignore: ['cloud-probe/**', '*.trigger.txt']
   workflow_dispatch:
     inputs:
@@ -53,9 +53,10 @@ jobs:
           git config user.email bot@users.noreply.github.com
           git add cloud-probe/deploy.txt cloud-probe/deploy.json
           git commit -m "chore: deploy $(date -u +%FT%TZ)" || echo none
-          git push origin HEAD:arena/01a0ba1a-stramingseparator || echo PUSH-DENIED
+          git push origin "HEAD:${REPORT_BRANCH}" || echo PUSH-DENIED
         env:
           GH_TOKEN: ${{ github.token }}
+          REPORT_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
   smoke:
     needs: deploy
     if: ${{ always() }}
@@ -81,9 +82,10 @@ jobs:
           git config user.email bot@users.noreply.github.com
           git add cloud-probe/smoketest.txt cloud-probe/report.json
           git commit -m "chore: smoke test $(date -u +%FT%TZ)" || echo none
-          git push origin HEAD:arena/01a0ba1a-stramingseparator || echo PUSH-DENIED
+          git push origin "HEAD:${REPORT_BRANCH}" || echo PUSH-DENIED
         env:
           GH_TOKEN: ${{ github.token }}
+          REPORT_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
       - name: gate (fail the run if any smoke check failed)
         run: |
           node -e '
