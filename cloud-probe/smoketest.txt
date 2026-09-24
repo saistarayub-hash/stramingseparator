@@ -1,12 +1,12 @@
-StreamPilot smoke test — 2026-09-24T19:40:27.945Z
+StreamPilot smoke test — 2026-09-24T19:55:36.484Z
 base: https://streampilot-ttus.onrender.com
 
-FAIL live app is on the pushed commit — live=e59f1ef want=8886ba8
+FAIL live app is on the pushed commit — live=e59f1ef want=b503324
 PASS GET /api/status → ok — {"ok":true,"cloud":"appwrite","appwriteConfigured":true,"gitCommit":"e59f1ef6789e191b638d86daf418c5c6b3e0f7d8","gitBranch":"arena/01a0ba1a-stramingseparator","buildAt":"2026-09-22T20:26:31.752Z"}
 PASS cloud active — {"configured":true,"active":true,"endpoint":"https://nyc.cloud.appwrite.io/v1","projectId":"6aaeab640039b9e4c8eb","apiKey":true,"apiKeyTail":"key","databaseId":"streampilot","databaseIdConfigured":"streampilot","engine":"tables","engines":{"tables":"full","documentsdb":null,"legacy":null},"error":null,"errorKind":null,"retry":null}
 PASS cloud engine = tables — engine=tables
 PASS cloud error empty — error=(none)
-PASS GET /api/videos — count=4
+PASS GET /api/videos — count=5
 PASS GET /api/settings — {"game":"Call of duty mobile","schedule":"","socials":"tiktok.com/@lol_minato33","donation":"","autopilotEnabled":true,"brain":{"faqs":[]},"youtubeToken":false}
 PASS GET /api/publishes — count=0
 PASS GET /api/connections — platforms=youtube:off,tiktok:off,twitch:off,kick:off
