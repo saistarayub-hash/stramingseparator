@@ -40,24 +40,41 @@ export function captionsForWindow(captions, windowStart, windowEnd) {
 /**
  * Transcribe a media file → timed captions.
  * Returns { captions, language, error }
+ * Aborts after `timeoutMs` (default 2 min, SP_WHISPER_TIMEOUT_MS) so a slow
+ * model download or a tiny box can never hang a live clip forever.
  */
-export function generateCaptions(mediaPath, { model = 'small', language = null } = {}) {
+export function generateCaptions(mediaPath, { model = null, language = null, timeoutMs = null } = {}) {
   return new Promise((resolve) => {
     if (!existsSync(mediaPath)) {
       resolve({ captions: [], error: 'media not found' });
       return;
     }
-    const args = [SCRIPT, mediaPath, '--model', model];
+    const args = [SCRIPT, mediaPath];
+    if (model) args.push('--model', model);
     if (language) args.push('--language', language);
     const python = process.env.PYTHON || 'python3';
+    const limit = Number(timeoutMs) || Number(process.env.SP_WHISPER_TIMEOUT_MS) || 120000;
 
     const child = spawn(python, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '';
     let err = '';
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, limit);
     child.stdout.on('data', (d) => (out += d.toString()));
     child.stderr.on('data', (d) => (err += d.toString()));
-    child.on('error', (e) => resolve({ captions: [], error: e.message }));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ captions: [], error: e.message });
+    });
     child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        resolve({ captions: [], error: `transcription timed out after ${Math.round(limit / 1000)}s` });
+        return;
+      }
       try {
         const parsed = JSON.parse(out.trim() || '{}');
         resolve({ captions: closeGaps(parsed.captions || []), language: parsed.language, error: parsed.error || null });

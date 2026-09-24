@@ -40,7 +40,15 @@ def main():
         sys.exit(2)
 
     try:
-        model = WhisperModel(args.model, device="auto", compute_type="auto")
+        # Memory-lean defaults: int8 on CPU survives 512MB free-tier boxes.
+        # Override with SP_WHISPER_DEVICE / SP_WHISPER_COMPUTE / SP_WHISPER_THREADS
+        # if you have a GPU or a bigger machine.
+        model = WhisperModel(
+            args.model,
+            device=os.environ.get("SP_WHISPER_DEVICE", "cpu"),
+            compute_type=os.environ.get("SP_WHISPER_COMPUTE", "int8"),
+            cpu_threads=int(os.environ.get("SP_WHISPER_THREADS", "2")),
+        )
         segments, info = model.transcribe(args.media, language=args.language, vad_filter=True)
         captions = []
         for seg in segments:

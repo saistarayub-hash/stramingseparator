@@ -158,6 +158,12 @@ First transcription downloads the model once (~500 MB for `small`) to `~/.cache`
 cached. No data leaves your machine. If Whisper isn't installed, StreamPilot still works —
 captions are simply skipped and the clip is cut without them.
 
+> **Runs as a background job.** Cutting and auto-editing report back over the Live feed
+> (cut → transcribe → captions → render → done), so slow machines and sleepy free tiers
+> can't kill the request mid-render. Pick `SP_WHISPER_MODEL=tiny` on 512 MB instances —
+> `small` wants ~1 GB+ RAM. Slow transcriptions are aborted after 2 min
+> (`SP_WHISPER_TIMEOUT_MS`) and the clip is delivered without captions.
+
 ---
 
 ## 🚀 Put it online — 3 clicks (no terminal, no Oracle)
