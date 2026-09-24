@@ -36,6 +36,6 @@ jobs:
           git config user.email bot@users.noreply.github.com
           git add cloud-probe/diag.txt
           git commit -m "chore: diag $(date -u +%FT%TZ)" || echo none
-          git push origin HEAD:arena/01a0ba1a-stramingseparator || echo PUSH-DENIED
+          git push origin "HEAD:${GITHUB_REF_NAME}" || echo PUSH-DENIED
         env:
           GH_TOKEN: ${{ github.token }}
